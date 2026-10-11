@@ -7,6 +7,7 @@ members = ["packages/*"]
 [tool.uv.sources]
 trustkit = { workspace = true }
 trustkit-aws = { workspace = true }
+mock-idp = { workspace = true }
 
 [dependency-groups]
 dev = [
@@ -21,6 +22,7 @@ dev = [
     "trustkit-aws",
     "moto[kms]>=5.0",
     "boto3-stubs[kms]>=1.35",
+    "mock-idp",
 ]
 
 # --------------------------------------------------------------------------- ruff
@@ -58,8 +60,8 @@ ignore = ["TRY003"]
 python_version = "3.12"
 strict = true
 warn_unreachable = true
-mypy_path = ["packages/trustkit/src", "packages/trustkit_aws/src"]
-packages = ["trustkit", "trustkit_aws"]
+mypy_path = ["packages/trustkit/src", "packages/trustkit_aws/src", "packages/mock_idp/src"]
+packages = ["trustkit", "trustkit_aws", "mock_idp"]
 
 # --------------------------------------------------------------------------- pytest
 [tool.pytest.ini_options]
@@ -73,7 +75,7 @@ xfail_strict = true
 
 [tool.coverage.run]
 branch = true
-source = ["trustkit", "trustkit_aws"]
+source = ["trustkit", "trustkit_aws", "mock_idp"]
 
 [tool.coverage.report]
 fail_under = 95
