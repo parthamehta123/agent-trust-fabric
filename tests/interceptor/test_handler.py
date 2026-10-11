@@ -287,6 +287,7 @@ class TestIngressDeny:
         ("reason", "status"),
         [
             (ExchangeReason.IDP_UNAVAILABLE, 503),
+            (ExchangeReason.CIRCUIT_OPEN, 503),
             (ExchangeReason.IDP_ERROR, 403),
             (ExchangeReason.T2_SCOPE_ESCALATION, 403),
             (ExchangeReason.SIGNING_FAILED, 503),

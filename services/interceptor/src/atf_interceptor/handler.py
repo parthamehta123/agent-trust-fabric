@@ -37,6 +37,7 @@ from atf_interceptor.events import (
     replace_response_text,
     request_id_from_context,
 )
+from trustkit import policy
 from trustkit.audit import AuditEvent, AuditSink, Decision, jti_hash
 from trustkit.binding import BindingError, BoundIdentity, bind
 from trustkit.exchange import ExchangeError, ExchangeReason, ExchangeResult, KeyResolverFactory
@@ -57,7 +58,7 @@ from trustkit.scanning import (
     scan_with_policy,
 )
 
-RESERVED_HEADERS: Final = ("x-atf-request-id", "x-atf-decision", "x-atf-scan-verdict")
+RESERVED_HEADERS: Final = tuple(sorted(policy.RESERVED_HEADERS))
 """Always set on every forwarded request (ADR-0012 §4). Advisory only: runtimes trust T2 claims."""
 
 SUBJECT_TOKEN_HEADER: Final = "x-subject-token"  # noqa: S105 - header name
@@ -66,6 +67,7 @@ _BEARER: Final = re.compile(r"^[Bb][Ee][Aa][Rr][Ee][Rr] ([A-Za-z0-9._~+/=-]+)$")
 _EXCHANGE_DEPENDENCY_FAILURES: Final = frozenset(
     {
         ExchangeReason.IDP_UNAVAILABLE,
+        ExchangeReason.CIRCUIT_OPEN,
         ExchangeReason.SIGNING_FAILED,
         ExchangeReason.MALFORMED_RESPONSE,
     }

@@ -355,3 +355,90 @@ class TestEdgePaths:
         )
         err = assert_denied(world, ExchangeReason.MALFORMED_RESPONSE)
         assert err.step == "token_exchange"
+
+
+@pytest.mark.security
+class TestCircuitBreaker:
+    """ADR-0014 §4 / TM-EXC-07."""
+
+    def _exchanger(self, world: World) -> Any:
+        from trustkit.breaker import BreakerRegistry
+        from trustkit.exchange import IdJagExchanger
+
+        return IdJagExchanger(
+            http=world.endpoint,
+            signers=lambda ref: world.signers[ref],
+            jwks=world.jwks,
+            breakers=BreakerRegistry(
+                failure_threshold=5, cooldown_s=30, now=lambda: float(world.clock())
+            ),
+            now=world.clock,
+        )
+
+    def _deny(self, ex: Any, world: World, reason: ExchangeReason) -> None:
+        with pytest.raises(ExchangeError) as ei:
+            ex.exchange(world.login_and_bind(), world.profile)
+        assert ei.value.reason is reason, ei.value
+
+    def test_opens_after_five_outages_then_fails_fast(self, world: World) -> None:
+        ex = self._exchanger(world)
+        world.endpoint.transport_failures = 10_000
+        for _ in range(5):
+            self._deny(ex, world, ExchangeReason.IDP_UNAVAILABLE)
+        calls = world.idp_calls()
+        self._deny(ex, world, ExchangeReason.CIRCUIT_OPEN)
+        assert world.idp_calls() == calls, "open breaker must not touch the IdP"
+
+    def test_5xx_and_429_count(self, world: World) -> None:
+        ex = self._exchanger(world)
+        world.endpoint.rewrite_response = lambda url, r: HttpResult(503, {})
+        for _ in range(5):
+            self._deny(ex, world, ExchangeReason.IDP_ERROR)
+        self._deny(ex, world, ExchangeReason.CIRCUIT_OPEN)
+
+    def test_policy_denials_do_not_trip(self, world: World) -> None:
+        """A 4xx means the IdP is healthy and said no."""
+        ex = self._exchanger(world)
+        bad = make_profile(
+            idp={**make_profile().idp.model_dump(), "resource_issuer": f"{BASE}/oauth2/nowhere"}
+        )
+        for _ in range(10):
+            with pytest.raises(ExchangeError) as ei:
+                ex.exchange(world.login_and_bind(), bad)
+            assert ei.value.reason is ExchangeReason.IDP_ERROR
+        assert not ex.exchange(world.login_and_bind(), world.profile).cached
+
+    def test_recovers_through_half_open_probe(self, world: World) -> None:
+        ex = self._exchanger(world)
+        world.endpoint.transport_failures = 10
+        for _ in range(5):
+            self._deny(ex, world, ExchangeReason.IDP_UNAVAILABLE)
+        world.endpoint.transport_failures = 0
+        world.clock.t += 31
+        assert ex.exchange(world.login_and_bind(), world.profile).claims.subject == ALICE
+
+    def test_signing_failure_during_probe_does_not_close_or_wedge(self, world: World) -> None:
+        """Our own key failing is not evidence about the IdP (breaker.release_probe)."""
+        from trustkit.breaker import CircuitState
+        from trustkit.signing import SigningError
+
+        ex = self._exchanger(world)
+        world.endpoint.transport_failures = 10
+        for _ in range(5):
+            self._deny(ex, world, ExchangeReason.IDP_UNAVAILABLE)
+        world.endpoint.transport_failures = 0
+        world.clock.t += 31
+        real = world.signers["local:chat"]
+
+        class Broken:
+            key_id, algorithm = "k", "ES256"
+
+            def sign(self, signing_input: bytes) -> bytes:
+                raise SigningError("kms down")
+
+        world.signers["local:chat"] = Broken()  # type: ignore[assignment]
+        self._deny(ex, world, ExchangeReason.SIGNING_FAILED)
+        breaker = ex._breakers.get(world.profile.idp.token_endpoint)
+        assert breaker.state is CircuitState.HALF_OPEN
+        world.signers["local:chat"] = real
+        assert ex.exchange(world.login_and_bind(), world.profile).claims.subject == ALICE

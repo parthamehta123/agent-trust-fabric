@@ -210,7 +210,7 @@ Each question becomes an ADR once it is decided.
 - **OQ-4 · Is the ingress proxy needed?** The managed gateway already has a JWT authorizer.
   The proxy earns its place only if we need edge controls the gateway lacks: WAF, mTLS, custom
   rate limits, request normalization.
-- **OQ-5 · Proof of transit.** How does a runtime prove that a request came through the gateway
+- ~~**OQ-5**~~ → resolved by [ADR-0014](adr/0014-phase2-runtime-trust-local-stack-breaker.md): T2 validation in the runtime plus network isolation. **Proof of transit.** How does a runtime prove that a request came through the gateway
   and interceptor? Options: T2 audience check only, a gateway-signed attestation header, or
   IAM-only reachability.
 
@@ -230,6 +230,8 @@ These are not yet confirmed.
 - ~~A-4~~ → resolved by [ADR-0009](adr/0009-ingress-id-jag-requested-by-frontend-client.md).
   The front-end client requests the ID-JAG on ingress, so we don't depend on the IdP relaxing
   the rule.
+- A-7: The AgentCore Runtime inbound JWT authorizer can be pinned to the resource AS issuer and
+  agent audience, as a second independent T2 check (ADR-0014).
 - A-1b: Real captured interceptor events (both shapes) match our fixtures (ADR-0012).
 - A-5: Whether an interceptor can remove an allowlisted client header, or only override it.
   We assume override only, so reserved headers are always overwritten (ADR-0012).

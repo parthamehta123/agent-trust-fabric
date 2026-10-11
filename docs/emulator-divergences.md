@@ -10,3 +10,6 @@ and each must be re-verified against the real service before Phase 6 (ADR-0005, 
 | ED-2 | moto 5.x KMS | `Sign` succeeds on a key in `Disabled` state | `DisabledException` | Any `ClientError` from `Sign` is a `SigningError`. The test injects the real error code. | ☐ |
 | ED-3 | moto 5.x KMS | `DisableKey` with a full key ARN raises an internal `KeyError` | Accepts key ID or ARN | Tests pass the bare key ID | ☐ |
 | ED-4 | moto 5.x KMS | `GetPublicKey` omits `KeySpec` (returns only the deprecated `CustomerMasterKeySpec`) | Returns both | Read `KeySpec`, fall back to `CustomerMasterKeySpec` | ☐ |
+| ED-5 | gateway-emulator | Client-sent allowlisted headers pass through when the interceptor omits them | Unknown whether interceptors can remove client headers (A-5) | Pessimistic on purpose: the interceptor always overwrites reserved headers | ☐ |
+| ED-6 | gateway-emulator | Interceptor exception or malformed output gives 502, target not called | Undocumented (A-6) | Our handler never raises. If real AWS fails open, ADR-0012 §3 still holds. | ☐ |
+| ED-7 | gateway-emulator | Inbound JWT check: signature, `iss`, `aud`, `exp` only | Real authorizer also supports `allowedClients`, scopes, discovery-URL caching | Interceptor re-validates the access token with the full trustkit validator (defence in depth) | ☐ |

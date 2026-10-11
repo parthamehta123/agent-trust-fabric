@@ -24,6 +24,7 @@ from enum import StrEnum
 from typing import Any, Final, Protocol
 
 from trustkit.binding import BoundIdentity
+from trustkit.breaker import BreakerRegistry
 from trustkit.cache import TokenCache, cache_key
 from trustkit.jwt import (
     CORE_REQUIRED_CLAIMS,
@@ -87,6 +88,7 @@ class ExchangeReason(StrEnum):
     CLIENT_NOT_CONFIGURED = "client_not_configured"
     SIGNING_FAILED = "signing_failed"
     IDP_UNAVAILABLE = "idp_unavailable"
+    CIRCUIT_OPEN = "circuit_open"
     IDP_ERROR = "idp_error"
     MALFORMED_RESPONSE = "malformed_response"
     ID_JAG_INVALID = "id_jag_invalid"
@@ -132,8 +134,11 @@ class IdJagExchanger:
         signers: SignerFactory,
         jwks: KeyResolverFactory,
         cache: TokenCache[ExchangeResult] | None = None,
+        breakers: BreakerRegistry | None = None,
         now: Callable[[], int] = lambda: int(time.time()),
     ) -> None:
+        """``breakers``: per-endpoint circuit breakers (ADR-0014 §4); ``None`` disables them."""
+        self._breakers = breakers
         self._http = http
         self._signers = signers
         self._jwks = jwks
@@ -233,6 +238,9 @@ class IdJagExchanger:
     def _call(
         self, step: str, url: str, signer: KeySigner, client_id: str, form: Mapping[str, str]
     ) -> Mapping[str, Any]:
+        breaker = self._breakers.get(url) if self._breakers is not None else None
+        if breaker is not None and not breaker.allow():
+            raise ExchangeError(ExchangeReason.CIRCUIT_OPEN, step=step)
         for attempt in range(1, _MAX_ATTEMPTS + 1):
             # A fresh assertion per attempt: the IdP may have consumed the previous jti.
             try:
@@ -240,6 +248,9 @@ class IdJagExchanger:
                     signer, client_id=client_id, token_endpoint=url, now=self._now
                 )
             except (SigningError, ValueError):
+                # Our key failed, not the IdP: free the probe slot, say nothing about IdP health.
+                if breaker is not None:
+                    breaker.release_probe()
                 raise ExchangeError(ExchangeReason.SIGNING_FAILED, step=step) from None
             try:
                 res = self._http.post_form(
@@ -252,8 +263,16 @@ class IdJagExchanger:
                 )
             except TransportError:
                 if attempt == _MAX_ATTEMPTS:
+                    if breaker is not None:
+                        breaker.record_failure()
                     raise ExchangeError(ExchangeReason.IDP_UNAVAILABLE, step=step) from None
                 continue
+            if breaker is not None:
+                # Only dependency failures count; a 4xx policy answer proves the IdP is healthy.
+                if res.status >= 500 or res.status == 429:
+                    breaker.record_failure()
+                else:
+                    breaker.record_success()
             if res.status != 200:
                 code = res.body.get("error")
                 known = code if isinstance(code, str) and code in KNOWN_OAUTH_ERRORS else None

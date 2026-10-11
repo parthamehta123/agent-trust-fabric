@@ -77,15 +77,15 @@ Status values: `planned` · `in-progress` · `done (test: <id>)` · `accepted (A
 | TM-EXC-04 | E | Revoked user keeps access through the cache | Bounded by the ≤300 s TTL (accepted residual, ADR-0003). T1 expiry is checked on every request, even on a cache hit. | 1 | done (test: `tests/exchange/test_exchange.py::TestCaching::test_entry_expires_before_t2`); residual RR-1 |
 | TM-EXC-05 | T | Malformed profile config yields permissive behaviour | Strict schema (unknown keys rejected). Top-level parse failure → deny-all. Per-profile failure → that gateway denied. Covered by property-based tests. | 1 | done (test: `tests/unit/test_profiles.py::TestTopLevelFailsClosed, TestPerProfileRejection, TestParserDifferentials`) |
 | TM-EXC-06 | E | Interceptor role reads secrets for other systems | IAM policy generated from the declared profiles: exact parameter and secret ARNs, no wildcards | 6 | planned |
-| TM-EXC-07 | D | IdP outage → total outage | Fail closed (availability trade-off accepted). Cache softens short blips. Circuit breaker with fast deny. | 1 | in-progress (retry policy done: `tests/exchange/test_exchange.py::TestRetries`; circuit breaker pending) |
+| TM-EXC-07 | D | IdP outage → total outage | Fail closed (availability trade-off accepted). Cache softens short blips. Circuit breaker with fast deny. | 1 | done (test: `tests/unit/test_breaker.py`, `tests/exchange/test_exchange.py::TestCircuitBreaker`, `test_idp_outage_trips_breaker`) |
 | TM-EXC-08 | S | ID-JAG replayed | Short `exp` (IdP-controlled). Resource AS enforces `jti` single use. The mock IdP implements this so tests can prove it. | 1 | done (test: `tests/mock_idp/test_conformance.py` replay cases; fresh assertion per retry in `TestRetries`) |
 
 ### TB-6: Gateway → agent runtime
 
 | ID | STRIDE | Threat | Mitigation | Phase | Status |
 |---|---|---|---|---|---|
-| TM-RT-01 | S | Request reaches the runtime bypassing the gateway and interceptor | Runtime validates T2 (`aud` == self, `iss` == resource AS). Network reachability restricted. See OQ-5 (proof of transit). | 2 | planned |
-| TM-RT-02 | T | Interceptor-added actor context forged by the caller | Omitting a header does **not** strip it (A-5), so the interceptor overwrites every reserved `x-atf-*` header on every path. The runtime trusts T2 claims, not headers. Credential headers are never allowlisted (ADR-0012). | 1 | in-progress (interceptor side done: `test_reserved_headers_always_overwritten`; runtime trusting T2 claims in Phase 2; A-5 to verify) |
+| TM-RT-01 | S | Request reaches the runtime bypassing the gateway and interceptor | Runtime validates T2 (`aud` == self, `iss` == resource AS). Network reachability restricted. See OQ-5 (proof of transit). | 2 | done (test: `tests/unit/test_resource.py`, `tests/e2e/test_runtime.py`, `tests/e2e/test_ingress_e2e.py::TestBypassAttempts`); A-7 (AgentCore Runtime inbound authorizer) to verify |
+| TM-RT-02 | T | Interceptor-added actor context forged by the caller | Omitting a header does **not** strip it (A-5), so the interceptor overwrites every reserved `x-atf-*` header on every path. The runtime trusts T2 claims, not headers. Credential headers are never allowlisted (ADR-0012). | 1 | done (interceptor overwrites + runtime trusts T2 only: `tests/e2e/test_runtime.py::TestRuntimeRejects`, `test_forged_advisory_headers_overwritten_end_to_end`); A-5 to verify |
 | TM-INT-01 | D/E | Interceptor crash or timeout with undocumented gateway semantics (A-6) becomes fail-open | The handler never raises. Every failure returns an explicit `transformedGatewayResponse` deny, with an internal deadline below the Lambda timeout (ADR-0012). | 1 | done (test: `tests/interceptor/test_handler.py::TestNeverRaises`, deadline test); A-6 to verify |
 | TM-INT-02 | E | RESPONSE interceptor (which still runs after an MCP short-circuit) turns a request-time deny into a pass | The response path never upgrades a deny. Deny marking can't be forged (ADR-0012). | 1 | done (test: `TestResponsePath::test_monotonic`, `test_mcp_response_after_our_own_deny_stays_denied`) |
 
@@ -147,6 +147,7 @@ Status values: `planned` · `in-progress` · `done (test: <id>)` · `accepted (A
 |---|---|---|
 | 2026-10-10 | — | Initial draft |
 | 2026-10-11 | Partha Mehta | Accepted ADR-0006/7/8. Added TM-ING-08 and TM-TOOL-07. |
+| 2026-10-11 | Partha Mehta | Phase 2a: runtime T2 authz (OQ-5, ADR-0014), circuit breaker, header-allowlist policy, gateway emulator, in-process e2e. TM-RT-01/02 and TM-EXC-07 done. |
 | 2026-10-11 | Partha Mehta | Phase 1 complete: interceptor (ADR-0012/0013), scanning, audit. 8 more mitigations done or advanced. Audit failure → deny. |
 | 2026-10-11 | Partha Mehta | A-1 verified against AWS docs (ADR-0012). Added TM-INT-01/02. TM-RT-02 rewritten: omission ≠ removal. |
 | 2026-10-11 | Partha Mehta | Phase 1 checkpoint 5: exchange + T2 cache + hardened HTTP adapter (ADR-0011). TM-EXC-01/02/03/04/08 done; TM-EXC-07 retry part done. |

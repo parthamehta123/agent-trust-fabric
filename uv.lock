@@ -4,7 +4,9 @@ requires-python = "==3.12.*"
 
 [manifest]
 members = [
+    "atf-agent-runtime",
     "atf-interceptor",
+    "gateway-emulator",
     "mock-idp",
     "trustkit",
     "trustkit-aws",
@@ -13,9 +15,11 @@ members = [
 
 [manifest.dependency-groups]
 dev = [
+    { name = "atf-agent-runtime", editable = "services/agent_runtime" },
     { name = "atf-interceptor", editable = "services/interceptor" },
     { name = "boto3-stubs", extras = ["kms"], specifier = ">=1.35" },
     { name = "cyclonedx-bom", specifier = ">=4.5" },
+    { name = "gateway-emulator", editable = "packages/gateway_emulator" },
     { name = "hypothesis", specifier = ">=6.100" },
     { name = "mock-idp", editable = "packages/mock_idp" },
     { name = "moto", extras = ["kms"], specifier = ">=5.0" },
@@ -107,6 +111,17 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/86/14/5d4fb733c18a1d69e237c067b183842f3a7ea1c999a51ddc87093a281c88/ast_serialize-0.12.1-cp39-abi3-win_amd64.whl", hash = "sha256:3d6ed63d4fc1ec867b8cb522d58c36df0e8f05e487bea0ffd102043a37636d72", size = 1165798, upload-time = "2026-10-03T12:24:57.052Z" },
     { url = "https://files.pythonhosted.org/packages/f1/f4/b54123680025c0b7253117418f023d1b2487f1102552acbdd9d8ee96b622/ast_serialize-0.12.1-cp39-abi3-win_arm64.whl", hash = "sha256:610a41351de68199de9a1434499083b4256c0df7658ec1cfc0a0a7b20b08d317", size = 1136560, upload-time = "2026-10-03T12:24:58.689Z" },
 ]
+
+[[package]]
+name = "atf-agent-runtime"
+version = "0.0.0"
+source = { editable = "services/agent_runtime" }
+dependencies = [
+    { name = "trustkit" },
+]
+
+[package.metadata]
+requires-dist = [{ name = "trustkit", editable = "packages/trustkit" }]
 
 [[package]]
 name = "atf-interceptor"
@@ -445,6 +460,21 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/02/01/248d44fbda9e78fa1a7b5a475194bef4c4a3e285db286419f3bb42f2efdf/fqdn-1.6.0.tar.gz", hash = "sha256:e39bf62e2a9481aa2cb780554fdfd944dd8ee5f230eb831684d539cbafed8de2", size = 130737, upload-time = "2026-09-28T05:43:35.482Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/15/d5/a8f9149b97cced9e1f4bff92ff0b6206120e2c853ae774d7020d6ecd8fa8/fqdn-1.6.0-py3-none-any.whl", hash = "sha256:6c793c312ccfa29981e1135b3ef5e1277ebe639731a6b0f7350d90e96e63f0b4", size = 12569, upload-time = "2026-09-28T05:43:33.951Z" },
+]
+
+[[package]]
+name = "gateway-emulator"
+version = "0.0.0"
+source = { editable = "packages/gateway_emulator" }
+dependencies = [
+    { name = "joserfc" },
+    { name = "trustkit" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "joserfc", specifier = ">=1.0" },
+    { name = "trustkit", editable = "packages/trustkit" },
 ]
 
 [[package]]

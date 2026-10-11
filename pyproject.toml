@@ -10,6 +10,8 @@ trustkit-aws = { workspace = true }
 mock-idp = { workspace = true }
 trustkit-http = { workspace = true }
 atf-interceptor = { workspace = true }
+atf-agent-runtime = { workspace = true }
+gateway-emulator = { workspace = true }
 
 [dependency-groups]
 dev = [
@@ -27,6 +29,8 @@ dev = [
     "mock-idp",
     "trustkit-http",
     "atf-interceptor",
+    "atf-agent-runtime",
+    "gateway-emulator",
 ]
 
 # --------------------------------------------------------------------------- ruff
@@ -64,8 +68,8 @@ ignore = ["TRY003"]
 python_version = "3.12"
 strict = true
 warn_unreachable = true
-mypy_path = ["packages/trustkit/src", "packages/trustkit_aws/src", "packages/mock_idp/src", "packages/trustkit_http/src", "services/interceptor/src"]
-packages = ["trustkit", "trustkit_aws", "mock_idp", "trustkit_http", "atf_interceptor"]
+mypy_path = ["packages/trustkit/src", "packages/trustkit_aws/src", "packages/mock_idp/src", "packages/trustkit_http/src", "services/interceptor/src", "services/agent_runtime/src", "packages/gateway_emulator/src"]
+packages = ["trustkit", "trustkit_aws", "mock_idp", "trustkit_http", "atf_interceptor", "atf_agent_runtime", "gateway_emulator"]
 
 # --------------------------------------------------------------------------- pytest
 [tool.pytest.ini_options]
@@ -79,7 +83,7 @@ xfail_strict = true
 
 [tool.coverage.run]
 branch = true
-source = ["trustkit", "trustkit_aws", "mock_idp", "trustkit_http", "atf_interceptor"]
+source = ["trustkit", "trustkit_aws", "mock_idp", "trustkit_http", "atf_interceptor", "atf_agent_runtime", "gateway_emulator"]
 
 [tool.coverage.report]
 fail_under = 95
