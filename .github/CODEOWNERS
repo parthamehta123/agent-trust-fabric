@@ -1,0 +1,7 @@
+# Every path requires owner review. Security-critical paths are listed explicitly
+# so they keep a required reviewer even if the default rule is later relaxed.
+*                          @parthamehta
+/packages/trustkit/        @parthamehta
+/docs/threat-model.md      @parthamehta
+/docs/adr/                 @parthamehta
+/infra/                    @parthamehta

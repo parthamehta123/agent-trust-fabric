@@ -1,0 +1,68 @@
+# Virtual uv workspace root: no [project] table, so the root is never built or published.
+# Each package/service declares its own runtime deps; shared dev tooling lives here.
+
+[tool.uv.workspace]
+members = ["packages/*"]
+
+[tool.uv.sources]
+trustkit = { workspace = true }
+
+[dependency-groups]
+dev = [
+    "trustkit",
+    "pytest>=8.3",
+    "pytest-cov>=5.0",
+    "hypothesis>=6.100",
+    "mypy>=1.11",
+    "ruff>=0.6",
+    "pip-audit>=2.7",
+    "cyclonedx-bom>=4.5",
+]
+
+# --------------------------------------------------------------------------- ruff
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+src = ["packages/*/src", "tests"]
+
+[tool.ruff.lint]
+select = [
+    "E", "W", "F",   # pycodestyle / pyflakes
+    "I",             # isort
+    "N",             # pep8-naming
+    "UP",            # pyupgrade
+    "B",             # bugbear
+    "S",             # flake8-bandit (security) — replaces a separate bandit run
+    "BLE",           # blind except
+    "A",             # shadowing builtins
+    "C4", "SIM", "RET", "PIE",
+    "DTZ",           # naive datetimes (token exp/iat math must be tz-aware)
+    "PT",            # pytest style
+    "TRY",           # exception hygiene
+    "ASYNC",
+    "RUF",
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["S101", "S105", "S106"]  # asserts and fake secrets are fine in tests
+
+# --------------------------------------------------------------------------- mypy
+[tool.mypy]
+python_version = "3.12"
+strict = true
+warn_unreachable = true
+mypy_path = "packages/trustkit/src"
+packages = ["trustkit"]
+
+# --------------------------------------------------------------------------- pytest
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra --strict-markers --strict-config"
+markers = [
+    "security: negative-path tests that map to a threat-model mitigation ID (TM-*)",
+]
+xfail_strict = true
+
+[tool.coverage.run]
+branch = true
+source = ["trustkit"]
