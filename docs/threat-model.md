@@ -58,9 +58,9 @@ Status values: `planned` · `in-progress` · `done (test: <id>)` · `accepted (A
 
 | ID | STRIDE | Threat | Mitigation | Phase | Status |
 |---|---|---|---|---|---|
-| TM-ING-01 | S | Forged or unsigned T1 (`alg=none`, HS256 confusion with the public key used as secret) | Allowlist `alg` (RS256/ES256 only). Key from JWKS by `kid`. Reject any header `jku`/`x5u`. | 1 | planned |
-| TM-ING-02 | S | Token for another app replayed here | Exact `iss` and `aud` match. Required `exp`, `iat`, `nbf` with ≤60 s skew. | 1 | planned |
-| TM-ING-03 | S | JWKS endpoint spoofing / key injection | JWKS URL pinned in config (HTTPS only, derived from the issuer). Cache with bounded refresh. Unknown `kid` triggers at most one refresh, rate-limited. | 1 | planned |
+| TM-ING-01 | S | Forged or unsigned T1 (`alg=none`, HS256 confusion with the public key used as secret) | Allowlist `alg` (RS256/ES256 only). Key from JWKS by `kid`. Reject any header `jku`/`x5u`. | 1 | done (test: `tests/unit/test_jwt.py::TestAlgorithmAttacks, TestStructuralEdges`) |
+| TM-ING-02 | S | Token for another app replayed here | Exact `iss` and `aud` match. Required `exp`, `iat`, `nbf` with ≤60 s skew. | 1 | done (test: `tests/unit/test_jwt.py::TestClaimAttacks`) |
+| TM-ING-03 | S | JWKS endpoint spoofing / key injection / retired-key reuse | JWKS URL pinned in config (HTTPS only). `jku`/`x5u`/`jwk`/`x5c`/`crit` headers rejected. Unknown-`kid` refresh rate-limited. Proactive refresh (`max_key_age_s` 1 h) so retired keys age out. Cached keys dropped after 24 h without a successful fetch. Duplicate `kid`s, `oct`/private/`enc`/weak (<2048-bit RSA) keys ignored. | 1 | done (test: `tests/unit/test_jwt.py::TestKeySelectionAttacks, TestJwksKeyResolver, TestJwksEntryEdges`) |
 | TM-ING-04 | T | Caller selects a weaker gateway profile via `Host` or a custom header | Profile resolved **only** from platform context (gateway ARN). Caller headers are ignored for routing decisions. | 1 | planned |
 | TM-ING-05 | D | Oversized or high-rate requests exhaust the interceptor or IdP quota | Size limits at the proxy. Per-subject rate limit. The T2 cache (ADR-0003) cuts IdP calls. IdP 429 → deny with `Retry-After`. | 2 | planned |
 | TM-ING-06 | I | T1 leaks to the runtime or to logs | Interceptor replaces `Authorization` with T2 and strips T1 from every forwarded header. Log redaction filter. A test asserts that T1 bytes never appear downstream or in captured logs. | 1 | planned |
@@ -75,7 +75,7 @@ Status values: `planned` · `in-progress` · `done (test: <id>)` · `accepted (A
 | TM-EXC-02 | E | T2 broader than needed (wildcard scopes or audience) | Scopes and audience come from the profile, never from the request. T2 is validated after minting: `aud` == target, scopes ⊆ profile scopes, else deny. | 1 | planned |
 | TM-EXC-03 | S | Cached T2 served to the wrong user or target | Cache key = H(T1 `jti` ‖ `sub` ‖ target audience). Never keyed by `sub` alone. TTL = min(exp − 30 s, 300 s). Per-execution-environment memory only. | 1 | planned |
 | TM-EXC-04 | E | Revoked user keeps access through the cache | Bounded by the ≤300 s TTL (accepted residual, ADR-0003). T1 expiry is checked on every request, even on a cache hit. | 1 | planned |
-| TM-EXC-05 | T | Malformed profile config yields permissive behaviour | Strict schema (unknown keys rejected). Top-level parse failure → deny-all. Per-profile failure → that gateway denied. Covered by property-based tests. | 1 | planned |
+| TM-EXC-05 | T | Malformed profile config yields permissive behaviour | Strict schema (unknown keys rejected). Top-level parse failure → deny-all. Per-profile failure → that gateway denied. Covered by property-based tests. | 1 | done (test: `tests/unit/test_profiles.py::TestTopLevelFailsClosed, TestPerProfileRejection, TestParserDifferentials`) |
 | TM-EXC-06 | E | Interceptor role reads secrets for other systems | IAM policy generated from the declared profiles: exact parameter and secret ARNs, no wildcards | 6 | planned |
 | TM-EXC-07 | D | IdP outage → total outage | Fail closed (availability trade-off accepted). Cache softens short blips. Circuit breaker with fast deny. | 1 | planned |
 | TM-EXC-08 | S | ID-JAG replayed | Short `exp` (IdP-controlled). Resource AS enforces `jti` single use. The mock IdP implements this so tests can prove it. | 1 | planned |
@@ -145,3 +145,4 @@ Status values: `planned` · `in-progress` · `done (test: <id>)` · `accepted (A
 |---|---|---|
 | 2026-10-10 | — | Initial draft |
 | 2026-10-11 | Partha Mehta | Accepted ADR-0006/7/8. Added TM-ING-08 and TM-TOOL-07. |
+| 2026-10-11 | Partha Mehta | Phase 1 checkpoint 1: TM-ING-01/02/03 and TM-EXC-05 done. Decisions: `enabled=false` is a kill switch (deny), KMS key ARNs only (no aliases), JWKS max staleness 24 h. |

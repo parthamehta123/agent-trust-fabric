@@ -43,6 +43,9 @@ select = [
     "RUF",
 ]
 
+# TRY003: our exception messages are deliberately fixed, log-safe strings chosen at the raise site.
+ignore = ["TRY003"]
+
 [tool.ruff.lint.per-file-ignores]
 "tests/**" = ["S101", "S105", "S106"]  # asserts and fake secrets are fine in tests
 
@@ -57,6 +60,7 @@ packages = ["trustkit"]
 # --------------------------------------------------------------------------- pytest
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+pythonpath = ["."]
 addopts = "-ra --strict-markers --strict-config"
 markers = [
     "security: negative-path tests that map to a threat-model mitigation ID (TM-*)",
@@ -66,3 +70,7 @@ xfail_strict = true
 [tool.coverage.run]
 branch = true
 source = ["trustkit"]
+
+[tool.coverage.report]
+fail_under = 95
+show_missing = true
