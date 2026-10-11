@@ -14,6 +14,7 @@ from collections.abc import Mapping
 from typing import Any
 
 from fastapi import FastAPI, Request, Response
+from starlette.concurrency import run_in_threadpool
 
 from atf_agent_runtime.runtime import AgentRuntime
 from trustkit.jwt import JwksKeyResolver
@@ -40,7 +41,9 @@ def create_app(runtime: AgentRuntime) -> FastAPI:
         headers = _single_valued_headers(request)
         if headers is None:
             return Response(b'{"error": "bad_request"}', 400, media_type="application/json")
-        result = runtime.invoke(headers, await request.body())
+        body = await request.body()
+        # Blocking work (JWKS fetch, agent call) runs off the event loop (TM-ING-05).
+        result = await run_in_threadpool(runtime.invoke, headers, body)
         extra = {k: v for k, v in result.headers.items() if k.lower() != "content-type"}
         return Response(result.body, result.status, headers=extra, media_type="application/json")
 

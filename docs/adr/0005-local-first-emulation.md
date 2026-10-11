@@ -1,6 +1,6 @@
 # ADR-0005: Local-first development with emulated IdP and AWS
 
-- **Status:** accepted
+- **Status:** accepted; e2e tooling amended by [ADR-0015](0015-local-stack-containers-and-tls.md)
 - **Date:** 2026-10-10
 - **Deciders:** Partha Mehta
 - **Threat-model refs:** RR-3

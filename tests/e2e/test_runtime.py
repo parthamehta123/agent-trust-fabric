@@ -53,7 +53,7 @@ class TestRuntimeRejects:
         r = runtime.invoke({}, b"{}")
         assert r.status == 401
         assert r.headers["WWW-Authenticate"] == "Bearer"
-        assert runtime.principals_seen == []
+        assert len(runtime.principals_seen) == 0
 
     def test_x_atf_headers_confer_nothing(self, runtime: AgentRuntime) -> None:
         """TM-RT-02: advisory headers alone never authorize."""
@@ -71,7 +71,7 @@ class TestRuntimeRejects:
             {"Authorization": f"Bearer {t2(mint)}", "authorization": "Bearer x"}, b"{}"
         )
         assert r.status == 401
-        assert runtime.principals_seen == []
+        assert len(runtime.principals_seen) == 0
 
     def test_wrong_scope_403(self, runtime: AgentRuntime, mint: Mint) -> None:
         r = runtime.invoke({"Authorization": f"Bearer {t2(mint, scope='agent.read')}"}, b"{}")

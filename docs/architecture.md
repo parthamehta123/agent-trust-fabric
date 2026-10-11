@@ -186,8 +186,8 @@ See [ADR-0005](adr/0005-local-first-emulation.md).
 | Real | Local stand-in |
 |---|---|
 | Okta Org AS + custom AS | `mocks/idp`: spec-conformant token exchange + JWT-bearer, RS256, JWKS |
-| AgentCore Gateway + interceptor hook | Thin local gateway harness that invokes the interceptor handler with the same event shape |
-| SSM / Secrets Manager / DynamoDB / S3 / SQS | `moto` in unit and contract tests; LocalStack in the e2e compose stack |
+| AgentCore Gateway + interceptor hook | `gateway-emulator` (documented behaviour, ADR-0014) calling the interceptor as a real Lambda image under RIE (ADR-0015) |
+| SSM / Secrets Manager / DynamoDB / S3 / SQS | `moto` in unit and contract tests (LocalStack only if a later phase needs a service moto lacks) |
 | Bedrock models | LiteLLM `mock_response` / a fake provider |
 | Content scanner | Rule-based local scanner implementing the same interface |
 

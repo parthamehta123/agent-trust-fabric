@@ -34,6 +34,7 @@ import copy
 import re
 import time
 import uuid
+from collections import deque
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from types import SimpleNamespace
@@ -106,7 +107,7 @@ class GatewayEmulator:
     interception_points: frozenset[str] = frozenset({"REQUEST", "RESPONSE"})
     pass_request_headers: bool = True
     now: Callable[[], int] = lambda: int(time.time())
-    calls: list[RecordedCall] = field(default_factory=list, repr=False)
+    calls: deque[RecordedCall] = field(default_factory=lambda: deque(maxlen=256), repr=False)
 
     def __post_init__(self) -> None:
         """Validate every target's allowlist (ADR-0014 §5) and the ARN shape."""

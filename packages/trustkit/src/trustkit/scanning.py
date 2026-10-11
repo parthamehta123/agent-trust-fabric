@@ -11,6 +11,7 @@ Threat-model refs: TM-TOOL-04, TM-INF-03, RR-2.
 from __future__ import annotations
 
 import re
+import threading
 from concurrent.futures import ThreadPoolExecutor
 from concurrent.futures import TimeoutError as FutureTimeoutError
 from dataclasses import dataclass, field
@@ -20,6 +21,8 @@ from typing import Final, Protocol
 from trustkit.profiles import ScannerFailureMode
 
 MAX_SCAN_BYTES: Final = 1_048_576
+MAX_INFLIGHT_SCANS: Final = 8
+_DEFAULT_LIMITER: Final = threading.BoundedSemaphore(MAX_INFLIGHT_SCANS)
 REDACTION: Final = "[REDACTED]"
 
 _INJECTION = re.compile(
@@ -71,7 +74,8 @@ class ScanOutcome:
     """True when the scanner failed and the profile's ``open`` mode let the content through.
     The interceptor must emit a ``scanner.fail_open`` audit event (ADR-0004)."""
     failure: str | None = None
-    """Set on failure: ``timeout``, ``unavailable``, ``too_large`` or ``invalid_result``."""
+    """Set on failure: ``timeout``, ``unavailable``, ``too_large``, ``saturated`` or
+    ``invalid_result``."""
 
 
 class LocalRulesScanner:
@@ -129,6 +133,7 @@ def scan_with_policy(
     direction: Direction,
     failure_mode: ScannerFailureMode,
     timeout_s: float,
+    limiter: threading.BoundedSemaphore | None = None,
 ) -> ScanOutcome:
     """Apply size limit, timeout and failure mode.
 
@@ -137,13 +142,27 @@ def scan_with_policy(
 
     * ``closed`` -> BLOCK, ``failed_open=False``
     * ``open``   -> ALLOW, ``failed_open=True``
+
+    At most ``MAX_INFLIGHT_SCANS`` scanner threads may exist at once, including ones that timed
+    out but are still running. When full, the call fails fast as ``saturated`` instead of
+    spawning another thread, so a hung scanner can't grow threads without bound.
     """
     if len(text.encode("utf-8", errors="replace")) > MAX_SCAN_BYTES:
         return failure_outcome(failure_mode, "too_large")
+    slots = limiter if limiter is not None else _DEFAULT_LIMITER
+    if not slots.acquire(blocking=False):
+        return failure_outcome(failure_mode, "saturated")
+
+    def run() -> ScanResult:
+        try:
+            return scanner.scan(text, direction=direction)
+        finally:
+            slots.release()  # released when the scan really ends, not when we stop waiting
+
     # Not a context manager: its __exit__ would wait for a hung scanner and defeat the timeout.
     pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="scanner")
     try:
-        future = pool.submit(scanner.scan, text, direction=direction)
+        future = pool.submit(run)
         result = future.result(timeout=timeout_s)
     except FutureTimeoutError:
         return failure_outcome(failure_mode, "timeout")

@@ -123,7 +123,7 @@ Status values: `planned` · `in-progress` · `done (test: <id>)` · `accepted (A
 |---|---|---|---|---|---|
 | TM-CP-01 | E | Agent owner self-approves elevated trust | Draft → review → approved workflow. Approver ≠ submitter, enforced server-side. Elevated tiers need security approval. | 4 | planned |
 | TM-CP-02 | T | Unreviewed Terraform changes profiles or policies | CODEOWNERS on `infra/` and `docs/adr/`. Branch protection. Plan output reviewed in the PR. | 6 | planned |
-| TM-CP-03 | T | Supply-chain compromise (deps, actions) | Locked deps (`uv.lock`), `pip-audit`, SBOM, actions pinned by SHA (TODO), Dependabot | 0 | in-progress |
+| TM-CP-03 | T | Supply-chain compromise (deps, actions) | Locked deps (`uv.lock`), hash-pinned image installs, `pip-audit`, SBOM, CI actions pinned by commit SHA, digest-pinned base images, Dependabot (pip/uv, actions, docker) | 0 | done (CI config) |
 | TM-CP-04 | I | Secrets committed to git | `gitleaks` + `detect-private-key` pre-commit + CI secret scan | 0 | in-progress |
 
 ### TB-12: Audit

@@ -19,6 +19,7 @@ from typing import Any, Final
 
 import httpx
 from fastapi import FastAPI, Request, Response
+from starlette.concurrency import run_in_threadpool
 
 from gateway_emulator.core import GatewayEmulator, HttpTarget, InboundJwt, TargetResponse
 from trustkit.policy import RESERVED_HEADERS
@@ -86,7 +87,10 @@ def create_app(emulator: GatewayEmulator) -> FastAPI:
             return Response(b'{"message": "Bad Request"}', 400, media_type="application/json")
         body = await request.body()
         source_ip = request.client.host if request.client else None
-        r = emulator.invoke(f"/{target}/invocations", headers, body, source_ip=source_ip)
+        # Blocking downstream I/O runs off the event loop (TM-ING-05).
+        r = await run_in_threadpool(
+            emulator.invoke, f"/{target}/invocations", headers, body, source_ip=source_ip
+        )
         return Response(r.body, r.status, media_type=r.content_type)
 
     @app.get("/ping")

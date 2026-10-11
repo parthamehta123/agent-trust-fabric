@@ -4,6 +4,8 @@
 - **Date:** 2026-10-12
 - **Deciders:** Partha Mehta
 - **Builds on:** ADR-0014 §2–§3
+- **Amends:** ADR-0005 (the e2e stack uses the gateway emulator + Lambda RIE, not LocalStack;
+  LocalStack does not emulate AgentCore)
 - **Threat-model refs:** TM-RT-01, TM-ING-06, TM-EXC-01, TM-CP-03, RR-3
 
 ## Context

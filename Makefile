@@ -4,7 +4,7 @@ export ATF_UID := $(shell id -u)
 export ATF_GID := $(shell id -g)
 PACKAGES := mock-idp gateway-emulator atf-agent-runtime atf-interceptor
 
-.PHONY: certs wheels up e2e down clean
+.PHONY: certs wheels up e2e logs-scan down clean
 
 certs:  ## ephemeral CA, service certs, client key, configs -> .local-ca/ (gitignored)
 	uv run python -m devstack.bootstrap --out .local-ca
@@ -28,6 +28,12 @@ up: certs wheels  ## build images and start the stack (waits for health)
 
 e2e:  ## run the HTTPS e2e suite against the running stack
 	ATF_COMPOSE=1 uv run pytest -m compose tests/compose -v
+
+logs-scan:  ## fail if any container log contains token- or key-shaped material (TM-ING-06)
+	mkdir -p build && docker compose logs --no-color > build/compose.log
+	@test -s build/compose.log || { echo "no logs captured: refusing to pass vacuously"; exit 1; }
+	@! grep -nE 'eyJ[A-Za-z0-9_-]{5,}\.[A-Za-z0-9_-]{5,}\.|PRIVATE KEY' build/compose.log
+	@echo "logs clean: $$(wc -l < build/compose.log) lines scanned"
 
 down:
 	docker compose down -v --remove-orphans

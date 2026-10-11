@@ -15,6 +15,7 @@ The "agent" itself is an injected callable, so the trust boundary can be tested 
 from __future__ import annotations
 
 import json
+from collections import deque
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from typing import Any, Final
@@ -23,6 +24,7 @@ from trustkit.resource import AuthzFailure, Principal, ResourceAuthorizer, Resou
 
 DEFAULT_REQUIRED_SCOPE: Final = "agent.invoke"
 DEFAULT_MAX_BODY_BYTES: Final = 262_144
+PRINCIPAL_HISTORY: Final = 64
 
 Agent = Callable[[Principal, Mapping[str, Any]], Mapping[str, Any]]
 """(authorized principal, request JSON) -> response JSON."""
@@ -41,8 +43,11 @@ class AgentRuntime:
     agent: Agent
     required_scope: str = DEFAULT_REQUIRED_SCOPE
     max_body_bytes: int = DEFAULT_MAX_BODY_BYTES
-    principals_seen: list[Principal] = field(default_factory=list, repr=False)
-    """Test observability: the principal of every *authorized* invocation."""
+    principals_seen: deque[Principal] = field(
+        default_factory=lambda: deque(maxlen=PRINCIPAL_HISTORY), repr=False
+    )
+    """Test observability: the most recent authorized principals. Bounded, so a long-running
+    runtime neither leaks memory nor accumulates user identities."""
 
     def invoke(self, headers: Mapping[str, str], body: bytes) -> InvocationResult:
         auth_values = [v for k, v in headers.items() if k.lower() == "authorization"]
