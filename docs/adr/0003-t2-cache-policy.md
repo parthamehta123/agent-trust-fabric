@@ -1,6 +1,6 @@
 # ADR-0003: T2 cache policy
 
-- **Status:** accepted
+- **Status:** accepted; cache key amended by [ADR-0011](0011-exchange-client-rules.md)
 - **Date:** 2026-10-10
 - **Deciders:** Partha Mehta
 - **Threat-model refs:** TM-EXC-03, TM-EXC-04, TM-EXC-07, RR-1

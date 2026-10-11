@@ -63,6 +63,7 @@ def ingress_profile(**overrides: Any) -> dict[str, Any]:
             "token_endpoint": "https://idp.example.test/oauth2/v1/token",
             "resource_issuer": "https://idp.example.test/oauth2/agent-alpha",
             "resource_token_endpoint": "https://idp.example.test/oauth2/agent-alpha/v1/token",
+            "resource_jwks_uri": "https://idp.example.test/oauth2/agent-alpha/v1/keys",
         },
         "target": {"audience": "api://agent-alpha", "scopes": ["agent.invoke"]},
         "ingress_clients": {"0oa-chat-frontend": KMS_ARN},

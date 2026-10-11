@@ -77,6 +77,8 @@ class IdpSettings(_Strict):
     """Issuer of the target's resource AS. Becomes the ID-JAG ``audience``."""
     resource_token_endpoint: HttpsUrl
     """Where the ID-JAG is redeemed for T2 (RFC 7523 JWT-bearer)."""
+    resource_jwks_uri: HttpsUrl
+    """Keys of the resource AS, for post-mint T2 validation (ADR-0011)."""
 
 
 ClientId = Annotated[str, StringConstraints(min_length=1, max_length=256)]

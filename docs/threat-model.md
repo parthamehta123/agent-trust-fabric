@@ -71,14 +71,14 @@ Status values: `planned` · `in-progress` · `done (test: <id>)` · `accepted (A
 
 | ID | STRIDE | Threat | Mitigation | Phase | Status |
 |---|---|---|---|---|---|
-| TM-EXC-01 | S | Stolen client secret used to mint ID-JAGs | Per-agent `private_key_jwt` signed via `kms:Sign`, so the key is non-exportable. Assertion `exp` ≤ 60 s, unique `jti` (ADR-0007). | 1 | in-progress (signer done: `tests/unit/test_signing.py`, `tests/aws/test_kms_signer.py`; used by exchange next) |
-| TM-EXC-02 | E | T2 broader than needed (wildcard scopes or audience) | Scopes and audience come from the profile, never from the request. T2 is validated after minting: `aud` == target, scopes ⊆ profile scopes, else deny. | 1 | planned |
-| TM-EXC-03 | S | Cached T2 served to the wrong user or target | Cache key = H(T1 `jti` ‖ `sub` ‖ target audience). Never keyed by `sub` alone. TTL = min(exp − 30 s, 300 s). Per-execution-environment memory only. | 1 | planned |
-| TM-EXC-04 | E | Revoked user keeps access through the cache | Bounded by the ≤300 s TTL (accepted residual, ADR-0003). T1 expiry is checked on every request, even on a cache hit. | 1 | planned |
+| TM-EXC-01 | S | Stolen client secret used to mint ID-JAGs | Per-agent `private_key_jwt` signed via `kms:Sign`, so the key is non-exportable. Assertion `exp` ≤ 60 s, unique `jti` (ADR-0007). | 1 | done (test: `tests/unit/test_signing.py`, `tests/aws/test_kms_signer.py`, `tests/exchange/test_exchange.py::TestEdgePaths`) |
+| TM-EXC-02 | E | T2 broader than needed (wildcard scopes or audience) | Scopes and audience come from the profile, never from the request. T2 is validated after minting: `aud` == target, scopes ⊆ profile scopes, else deny. | 1 | done (test: `tests/exchange/test_exchange.py::TestResponseValidation`) |
+| TM-EXC-03 | S | Cached T2 served to the wrong user or target | Cache key = H(T1 `jti` ‖ `sub` ‖ target audience). Never keyed by `sub` alone. TTL = min(exp − 30 s, 300 s). Per-execution-environment memory only. | 1 | done (test: `tests/unit/test_cache.py`, `tests/exchange/test_exchange.py::TestCaching`) |
+| TM-EXC-04 | E | Revoked user keeps access through the cache | Bounded by the ≤300 s TTL (accepted residual, ADR-0003). T1 expiry is checked on every request, even on a cache hit. | 1 | done (test: `tests/exchange/test_exchange.py::TestCaching::test_entry_expires_before_t2`); residual RR-1 |
 | TM-EXC-05 | T | Malformed profile config yields permissive behaviour | Strict schema (unknown keys rejected). Top-level parse failure → deny-all. Per-profile failure → that gateway denied. Covered by property-based tests. | 1 | done (test: `tests/unit/test_profiles.py::TestTopLevelFailsClosed, TestPerProfileRejection, TestParserDifferentials`) |
 | TM-EXC-06 | E | Interceptor role reads secrets for other systems | IAM policy generated from the declared profiles: exact parameter and secret ARNs, no wildcards | 6 | planned |
-| TM-EXC-07 | D | IdP outage → total outage | Fail closed (availability trade-off accepted). Cache softens short blips. Circuit breaker with fast deny. | 1 | planned |
-| TM-EXC-08 | S | ID-JAG replayed | Short `exp` (IdP-controlled). Resource AS enforces `jti` single use. The mock IdP implements this so tests can prove it. | 1 | in-progress (enforced by mock IdP: `tests/mock_idp/test_conformance.py`; client-side handling in exchange next) |
+| TM-EXC-07 | D | IdP outage → total outage | Fail closed (availability trade-off accepted). Cache softens short blips. Circuit breaker with fast deny. | 1 | in-progress (retry policy done: `tests/exchange/test_exchange.py::TestRetries`; circuit breaker pending) |
+| TM-EXC-08 | S | ID-JAG replayed | Short `exp` (IdP-controlled). Resource AS enforces `jti` single use. The mock IdP implements this so tests can prove it. | 1 | done (test: `tests/mock_idp/test_conformance.py` replay cases; fresh assertion per retry in `TestRetries`) |
 
 ### TB-6: Gateway → agent runtime
 
@@ -145,6 +145,7 @@ Status values: `planned` · `in-progress` · `done (test: <id>)` · `accepted (A
 |---|---|---|
 | 2026-10-10 | — | Initial draft |
 | 2026-10-11 | Partha Mehta | Accepted ADR-0006/7/8. Added TM-ING-08 and TM-TOOL-07. |
+| 2026-10-11 | Partha Mehta | Phase 1 checkpoint 5: exchange + T2 cache + hardened HTTP adapter (ADR-0011). TM-EXC-01/02/03/04/08 done; TM-EXC-07 retry part done. |
 | 2026-10-11 | Partha Mehta | Phase 1 checkpoint 4: mock IdP (independent of trustkit; strict A-4; client-assertion and ID-JAG replay protection), 50 conformance tests. |
 | 2026-10-11 | Partha Mehta | Phase 1 checkpoint 3: ES256 `private_key_jwt` signer + KMS adapter (ADR-0010). Four moto divergences logged (ED-1..4). |
 | 2026-10-11 | Partha Mehta | Phase 1 checkpoint 2: ADR-0009 accepted (front-end client requests the ID-JAG on ingress; `auth_time` freshness). TM-ING-08 done. |
