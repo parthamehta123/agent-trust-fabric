@@ -22,6 +22,33 @@ from trustkit.profiles import (
 )
 
 KMS_ARN = "arn:aws:kms:us-east-1:123456789012:key/0f1e2d3c-4b5a-6978-8796-a5b4c3d2e1f0"
+ALIAS = "arn:aws:kms:us-east-1:123456789012:alias/agent"
+
+# For each invalid-profile case: a substring the rejection reason must contain. This proves the
+# profile was rejected for the reason under test, not for some unrelated mistake in the fixture.
+EXPECTED_REASON = {
+    "unknown-field": "client_secret",
+    "no-bool-coercion": "enabled",
+    "unknown-flow": "flow",
+    "bad-slug": "profile_id",
+    "http-issuer": "idp.issuer",
+    "empty-host": "idp.jwks_uri",
+    "empty-scopes": "target.scopes",
+    "wildcard-scope": "target.scopes",
+    "glob-scope": "target.scopes",
+    "ingress-raw-key-not-ref": "ingress_clients.0oa-chat-frontend",
+    "ingress-kms-alias-not-key-arn": "ingress_clients.0oa-chat-frontend",
+    "egress-raw-key-not-ref": "client.signing_key",
+    "egress-kms-alias-not-key-arn": "client.signing_key",
+    "ingress-empty-clients": "ingress_clients",
+    "ingress-missing-auth-age": "<profile>: value_error",
+    "ingress-with-agent-client": "<profile>: value_error",
+    "egress-missing-client": "<profile>: value_error",
+    "egress-with-ingress-field": "<profile>: value_error",
+    "timeout-over-max": "scanner_timeout_ms",
+    "timeout-zero": "scanner_timeout_ms",
+    "unknown-fail-mode": "scanner_failure_mode",
+}
 
 
 def ingress_profile(**overrides: Any) -> dict[str, Any]:
@@ -37,10 +64,9 @@ def ingress_profile(**overrides: Any) -> dict[str, Any]:
             "resource_issuer": "https://idp.example.test/oauth2/agent-alpha",
             "resource_token_endpoint": "https://idp.example.test/oauth2/agent-alpha/v1/token",
         },
-        "client": {"client_id": "0oa-agent-alpha", "signing_key": KMS_ARN},
         "target": {"audience": "api://agent-alpha", "scopes": ["agent.invoke"]},
-        "allowed_ingress_client_ids": ["0oa-chat-frontend"],
-        "max_id_token_age_s": 3600,
+        "ingress_clients": {"0oa-chat-frontend": KMS_ARN},
+        "max_auth_age_s": 43_200,
     }
     p.update(overrides)
     return p
@@ -48,7 +74,8 @@ def ingress_profile(**overrides: Any) -> dict[str, Any]:
 
 def egress_profile(**overrides: Any) -> dict[str, Any]:
     p = ingress_profile(profile_id="tools-egress", gateway_id="gw-tools", flow="egress")
-    del p["allowed_ingress_client_ids"], p["max_id_token_age_s"]
+    del p["ingress_clients"], p["max_auth_age_s"]
+    p["client"] = {"client_id": "0oa-agent-tools", "signing_key": KMS_ARN}
     p.update(overrides)
     return p
 
@@ -85,11 +112,16 @@ class TestLoads:
         assert p.scanner_failure_mode is ScannerFailureMode.CLOSED
 
     def test_local_signing_key_ref(self) -> None:
-        p = ingress_profile(client={"client_id": "c", "signing_key": "local:agent-alpha"})
-        assert (
-            load_profiles(doc(p)).lookup("gw-ingress-alpha").client.signing_key
-            == "local:agent-alpha"
-        )
+        p = egress_profile(client={"client_id": "c", "signing_key": "local:agent-tools"})
+        client = load_profiles(doc(p)).lookup("gw-tools").client
+        assert client is not None
+        assert client.signing_key == "local:agent-tools"
+
+    def test_ingress_clients_map(self) -> None:
+        """ADR-0009: each allowed front end carries its own signing key."""
+        p = ingress_profile(ingress_clients={"0oa-web": KMS_ARN, "0oa-mobile": "local:mobile"})
+        clients = load_profiles(doc(p)).lookup("gw-ingress-alpha").ingress_clients
+        assert clients == {"0oa-web": KMS_ARN, "0oa-mobile": "local:mobile"}
 
     def test_disabled_profile_still_loads(self) -> None:
         """Denying requests for a disabled gateway is the interceptor's job, not the loader's."""
@@ -184,17 +216,29 @@ class TestPerProfileRejection:
                 with_nested(ingress_profile(), "target.scopes", ["agent.*"]), id="glob-scope"
             ),
             pytest.param(
-                with_nested(ingress_profile(), "client.signing_key", "s3cr3t-raw-key"),
-                id="raw-key-not-ref",
+                with_nested(ingress_profile(), "ingress_clients.0oa-chat-frontend", "s3cr3t-raw"),
+                id="ingress-raw-key-not-ref",
             ),
             pytest.param(
-                with_nested(
-                    ingress_profile(),
-                    "client.signing_key",
-                    "arn:aws:kms:us-east-1:123456789012:alias/agent",
-                ),
-                id="kms-alias-not-key-arn",
+                with_nested(ingress_profile(), "ingress_clients.0oa-chat-frontend", ALIAS),
+                id="ingress-kms-alias-not-key-arn",
             ),
+            pytest.param(
+                with_nested(egress_profile(), "client.signing_key", "s3cr3t-raw"),
+                id="egress-raw-key-not-ref",
+            ),
+            pytest.param(
+                with_nested(egress_profile(), "client.signing_key", ALIAS),
+                id="egress-kms-alias-not-key-arn",
+            ),
+            pytest.param(ingress_profile(ingress_clients={}), id="ingress-empty-clients"),
+            pytest.param(ingress_profile(max_auth_age_s=None), id="ingress-missing-auth-age"),
+            pytest.param(
+                ingress_profile(client={"client_id": "c", "signing_key": KMS_ARN}),
+                id="ingress-with-agent-client",
+            ),
+            pytest.param(egress_profile(client=None), id="egress-missing-client"),
+            pytest.param(egress_profile(max_auth_age_s=60), id="egress-with-ingress-field"),
             pytest.param(
                 ingress_profile(scanner_timeout_ms=PLATFORM_MAX_SCANNER_TIMEOUT_MS + 1),
                 id="timeout-over-max",
@@ -203,34 +247,19 @@ class TestPerProfileRejection:
             pytest.param(ingress_profile(scanner_failure_mode="maybe"), id="unknown-fail-mode"),
         ],
     )
-    def test_invalid_profile_dropped_others_survive(self, bad: dict[str, Any]) -> None:
+    def test_invalid_profile_dropped_others_survive(
+        self, bad: dict[str, Any], request: pytest.FixtureRequest
+    ) -> None:
         """TM-EXC-05 / TM-EXC-02: one bad profile can't take the platform down or widen access."""
         bad = {**bad, "gateway_id": "gw-bad"}
+        bad = {k: v for k, v in bad.items() if v is not None}
         reg = load_profiles(doc(bad, egress_profile()))
         assert reg.lookup("gw-tools")
         with pytest.raises(UnknownGatewayError):
             reg.lookup("gw-bad")
-        assert len(reg.rejected) == 1
-
-    def test_ingress_requires_binding_fields(self) -> None:
-        """ADR-0006: ingress profiles must declare allowed clients + max ID-token age."""
-        p = ingress_profile()
-        del p["allowed_ingress_client_ids"]
-        reg = load_profiles(doc(p))
-        with pytest.raises(UnknownGatewayError):
-            reg.lookup("gw-ingress-alpha")
-
-    def test_ingress_rejects_empty_client_allowlist(self) -> None:
-        """ADR-0006"""
-        reg = load_profiles(doc(ingress_profile(allowed_ingress_client_ids=[])))
-        with pytest.raises(UnknownGatewayError):
-            reg.lookup("gw-ingress-alpha")
-
-    def test_egress_forbids_ingress_fields(self) -> None:
-        """Fields that don't apply are a config smell, so reject rather than ignore."""
-        reg = load_profiles(doc(egress_profile(max_id_token_age_s=60)))
-        with pytest.raises(UnknownGatewayError):
-            reg.lookup("gw-tools")
+        assert list(reg.rejected) == ["profiles[0]"]
+        case_id = request.node.callspec.id
+        assert EXPECTED_REASON[case_id] in reg.rejected["profiles[0]"], reg.rejected
 
     def test_duplicate_gateway_id_drops_both(self) -> None:
         """TM-EXC-05: two profiles for one gateway is ambiguous, so deny rather than pick one."""

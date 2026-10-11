@@ -103,7 +103,7 @@ sequenceDiagram
   I->>I: T2 cache lookup key = H(T1.jti, target audience)
   alt cache miss
     I->>I: bind AT ↔ ID token (ADR-0006)
-    I->>O: token-exchange: subject=ID token → id-jag, aud=R · client=agent (KMS private_key_jwt)
+    I->>O: token-exchange: subject=ID token → id-jag, aud=R · client=front-end (KMS private_key_jwt)
     O-->>I: ID-JAG
     I->>R: jwt-bearer: assertion=ID-JAG
     R-->>I: T2 (aud=target, scope=least)
@@ -226,9 +226,9 @@ These are not yet confirmed.
   with an Okta-issued ID-JAG.
 - A-3: Bedrock KB with an S3 Vectors store supports metadata filtering sufficient for
   retrieval-time authorization.
-- A-4: Whether the IdP lets an agent's client exchange an ID token that was issued to a
-  *different* (front-end) client. This determines which client requests the ID-JAG
-  (see ADR-0007).
+- ~~A-4~~ → resolved by [ADR-0009](adr/0009-ingress-id-jag-requested-by-frontend-client.md).
+  The front-end client requests the ID-JAG on ingress, so we don't depend on the IdP relaxing
+  the rule.
 
 [RFC 8693]: https://www.rfc-editor.org/rfc/rfc8693
 [RFC 7523]: https://www.rfc-editor.org/rfc/rfc7523

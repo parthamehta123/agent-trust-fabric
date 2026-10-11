@@ -1,6 +1,6 @@
 # ADR-0006: Ingress credentials (access token for the gateway, ID token as exchange subject)
 
-- **Status:** accepted
+- **Status:** accepted; freshness rule amended by [ADR-0009](0009-ingress-id-jag-requested-by-frontend-client.md)
 - **Date:** 2026-10-11
 - **Deciders:** Partha Mehta
 - **Resolves:** OQ-1

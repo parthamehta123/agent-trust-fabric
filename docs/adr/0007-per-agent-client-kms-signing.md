@@ -1,6 +1,6 @@
 # ADR-0007: Per-agent OAuth clients authenticated with KMS-signed `private_key_jwt`
 
-- **Status:** accepted (one constraint to verify: A-4)
+- **Status:** accepted; ingress client selection amended by [ADR-0009](0009-ingress-id-jag-requested-by-frontend-client.md)
 - **Date:** 2026-10-11
 - **Deciders:** Partha Mehta
 - **Resolves:** OQ-2

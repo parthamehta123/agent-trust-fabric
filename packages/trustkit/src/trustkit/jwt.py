@@ -260,6 +260,10 @@ class TokenValidator:
         self._keys = keys
         self._now = now or (lambda: int(time.time()))
 
+    @property
+    def policy(self) -> ValidationPolicy:
+        return self._policy
+
     def validate(self, token: str) -> VerifiedToken:
         p = self._policy
         if len(token.encode("utf-8", errors="replace")) > p.max_token_bytes:

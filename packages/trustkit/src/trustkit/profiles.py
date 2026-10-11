@@ -79,8 +79,11 @@ class IdpSettings(_Strict):
     """Where the ID-JAG is redeemed for T2 (RFC 7523 JWT-bearer)."""
 
 
+ClientId = Annotated[str, StringConstraints(min_length=1, max_length=256)]
+
+
 class ClientAuth(_Strict):
-    client_id: Annotated[str, StringConstraints(min_length=1, max_length=256)]
+    client_id: ClientId
     signing_key: KeyRef
 
 
@@ -95,32 +98,29 @@ class GatewayProfile(_Strict):
     flow: Flow
     enabled: bool
     """Kill switch / staged rollout. ``False`` means the interceptor denies every request for
-    this gateway. It never means "forward the caller's token unchanged" (see review Q1)."""
+    this gateway. It never means "forward the caller's token unchanged"."""
     idp: IdpSettings
-    client: ClientAuth
     target: Target
     scanner_failure_mode: ScannerFailureMode = ScannerFailureMode.CLOSED
     scanner_timeout_ms: Annotated[int, Field(gt=0, le=PLATFORM_MAX_SCANNER_TIMEOUT_MS)] = 800
 
-    # Ingress-only (ADR-0006). Required when flow == ingress, forbidden when flow == egress.
-    allowed_ingress_client_ids: (
-        Annotated[
-            frozenset[Annotated[str, StringConstraints(min_length=1, max_length=256)]],
-            Field(min_length=1),
-        ]
-        | None
-    ) = None
-    max_id_token_age_s: Annotated[int, Field(gt=0, le=86_400)] | None = None
+    # Egress only: the agent's own client (ADR-0007). Required for egress, forbidden for ingress.
+    client: ClientAuth | None = None
+
+    # Ingress only (ADR-0006, ADR-0009). Required for ingress, forbidden for egress.
+    ingress_clients: Annotated[dict[ClientId, KeyRef], Field(min_length=1)] | None = None
+    """Front-end clients allowed to drive exchanges for this agent, each with its signing key."""
+    max_auth_age_s: Annotated[int, Field(gt=0, le=86_400)] | None = None
+    """Upper bound on ``now - IDT.auth_time``: how old the user's actual login may be."""
 
     @model_validator(mode="after")
     def _flow_specific_fields(self) -> Self:
-        ingress_fields = (self.allowed_ingress_client_ids, self.max_id_token_age_s)
-        if self.flow is Flow.INGRESS and any(f is None for f in ingress_fields):
-            raise ValueError(
-                "ingress profiles require allowed_ingress_client_ids and max_id_token_age_s"
-            )
-        if self.flow is Flow.EGRESS and any(f is not None for f in ingress_fields):
-            raise ValueError("egress profiles must not set ingress-only fields")
+        ingress_fields = (self.ingress_clients, self.max_auth_age_s)
+        if self.flow is Flow.INGRESS:
+            if any(f is None for f in ingress_fields) or self.client is not None:
+                raise ValueError("ingress: needs ingress_clients + max_auth_age_s, no client")
+        elif any(f is not None for f in ingress_fields) or self.client is None:
+            raise ValueError("egress: needs client, no ingress-only fields")
         return self
 
 
