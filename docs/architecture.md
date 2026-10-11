@@ -218,9 +218,10 @@ Each question becomes an ADR once it is decided.
 
 These are not yet confirmed.
 
-- A-1: AgentCore Gateway REQUEST/RESPONSE interceptors receive the inbound `Authorization`
-  header (possibly only behind an opt-in such as "pass request headers") and can rewrite the
-  outbound headers.
+- ~~A-1~~ → verified against AWS docs, see [ADR-0012](adr/0012-interceptor-contract-and-failure-semantics.md).
+  Headers require `passRequestHeaders: true`. An interceptor-returned `Authorization` overrides
+  the target's credentials. The gateway ARN arrives in the Lambda client context. There are two
+  payload shapes (`mcp` and `http`, base64).
 - A-2: Okta supports the `urn:ietf:params:oauth:token-type:id-jag` requested token type for our
   tenant tier (Cross App Access), and custom authorization servers accept the JWT-bearer grant
   with an Okta-issued ID-JAG.
@@ -229,6 +230,11 @@ These are not yet confirmed.
 - ~~A-4~~ → resolved by [ADR-0009](adr/0009-ingress-id-jag-requested-by-frontend-client.md).
   The front-end client requests the ID-JAG on ingress, so we don't depend on the IdP relaxing
   the rule.
+- A-1b: Real captured interceptor events (both shapes) match our fixtures (ADR-0012).
+- A-5: Whether an interceptor can remove an allowlisted client header, or only override it.
+  We assume override only, so reserved headers are always overwritten (ADR-0012).
+- A-6: Gateway behaviour when the interceptor errors or times out is undocumented. The
+  interceptor never raises and always returns an explicit deny (ADR-0012).
 
 [RFC 8693]: https://www.rfc-editor.org/rfc/rfc8693
 [RFC 7523]: https://www.rfc-editor.org/rfc/rfc7523
