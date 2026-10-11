@@ -41,3 +41,6 @@ override.tf.json
 # Build artifacts
 sbom.json
 .DS_Store
+
+# Ephemeral local CA, service certs, client keys, generated configs (ADR-0015)
+.local-ca/

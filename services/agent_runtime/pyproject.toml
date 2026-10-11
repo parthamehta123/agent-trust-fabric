@@ -4,7 +4,10 @@ version = "0.0.0"
 description = "Reference agent runtime: authorizes every invocation from T2 claims only (ADR-0014)."
 requires-python = ">=3.12,<3.13"
 dependencies = [
+    "fastapi>=0.115",
     "trustkit",
+    "trustkit-http",
+    "uvicorn>=0.30",
 ]
 
 [build-system]
@@ -16,3 +19,4 @@ packages = ["src/atf_agent_runtime"]
 
 [tool.uv.sources]
 trustkit = { workspace = true }
+trustkit-http = { workspace = true }

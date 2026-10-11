@@ -13,6 +13,7 @@
 from __future__ import annotations
 
 import json
+import ssl
 from collections.abc import Mapping
 from typing import Any, Final
 
@@ -25,6 +26,17 @@ DEFAULT_TOTAL_TIMEOUT_S: Final = 5.0
 DEFAULT_MAX_RESPONSE_BYTES: Final = 65_536
 
 
+def tls_context(ca_bundle_path: str | None) -> ssl.SSLContext | bool:
+    """Verification is always on. With a bundle, *only* that bundle is trusted (ADR-0015 §4)."""
+    if ca_bundle_path is None:
+        return True
+    try:
+        # create_default_context(cafile=...) skips the system store: trust is narrowed, not widened.
+        return ssl.create_default_context(cafile=ca_bundle_path)
+    except (OSError, ssl.SSLError, ValueError):
+        raise ValueError("ca bundle unusable") from None
+
+
 class HttpxTokenEndpoint:
     def __init__(
         self,
@@ -32,16 +44,18 @@ class HttpxTokenEndpoint:
         connect_timeout_s: float = DEFAULT_CONNECT_TIMEOUT_S,
         total_timeout_s: float = DEFAULT_TOTAL_TIMEOUT_S,
         max_response_bytes: int = DEFAULT_MAX_RESPONSE_BYTES,
+        ca_bundle_path: str | None = None,
         transport: httpx.BaseTransport | None = None,
     ) -> None:
-        """``transport`` exists for tests (``httpx.MockTransport``) only."""
+        """``ca_bundle_path`` *narrows* trust to one CA bundle (ADR-0015 §4); it can never disable
+        verification. ``transport`` exists for tests (``httpx.MockTransport``) only."""
         if max_response_bytes <= 0:
             raise ValueError("max_response_bytes must be positive")
         self._max = max_response_bytes
         self._client = httpx.Client(
             timeout=httpx.Timeout(total_timeout_s, connect=connect_timeout_s),
             follow_redirects=False,
-            verify=True,
+            verify=tls_context(ca_bundle_path),
             transport=transport,
             headers={"accept": "application/json"},
         )

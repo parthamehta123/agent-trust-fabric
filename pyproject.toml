@@ -12,6 +12,7 @@ trustkit-http = { workspace = true }
 atf-interceptor = { workspace = true }
 atf-agent-runtime = { workspace = true }
 gateway-emulator = { workspace = true }
+devstack = { workspace = true }
 
 [dependency-groups]
 dev = [
@@ -31,6 +32,7 @@ dev = [
     "atf-interceptor",
     "atf-agent-runtime",
     "gateway-emulator",
+    "devstack",
 ]
 
 # --------------------------------------------------------------------------- ruff
@@ -68,8 +70,8 @@ ignore = ["TRY003"]
 python_version = "3.12"
 strict = true
 warn_unreachable = true
-mypy_path = ["packages/trustkit/src", "packages/trustkit_aws/src", "packages/mock_idp/src", "packages/trustkit_http/src", "services/interceptor/src", "services/agent_runtime/src", "packages/gateway_emulator/src"]
-packages = ["trustkit", "trustkit_aws", "mock_idp", "trustkit_http", "atf_interceptor", "atf_agent_runtime", "gateway_emulator"]
+mypy_path = ["packages/trustkit/src", "packages/trustkit_aws/src", "packages/mock_idp/src", "packages/trustkit_http/src", "services/interceptor/src", "services/agent_runtime/src", "packages/gateway_emulator/src", "packages/devstack/src"]
+packages = ["trustkit", "trustkit_aws", "mock_idp", "trustkit_http", "atf_interceptor", "atf_agent_runtime", "gateway_emulator", "devstack"]
 
 # --------------------------------------------------------------------------- pytest
 [tool.pytest.ini_options]
@@ -78,12 +80,13 @@ pythonpath = ["."]
 addopts = "-ra --strict-markers --strict-config"
 markers = [
     "security: negative-path tests that map to a threat-model mitigation ID (TM-*)",
+    "compose: end-to-end tests against the running docker compose stack (make up e2e)",
 ]
 xfail_strict = true
 
 [tool.coverage.run]
 branch = true
-source = ["trustkit", "trustkit_aws", "mock_idp", "trustkit_http", "atf_interceptor", "atf_agent_runtime", "gateway_emulator"]
+source = ["trustkit", "trustkit_aws", "mock_idp", "trustkit_http", "atf_interceptor", "atf_agent_runtime", "gateway_emulator", "devstack"]
 
 [tool.coverage.report]
 fail_under = 95

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Callable
+from typing import Any
 from urllib.parse import parse_qs
 
 import httpx
@@ -165,3 +166,43 @@ class TestAdapterEdges:
         ep.close()
         with pytest.raises(RuntimeError, match="closed"):
             ep.post_form(URL, {})
+
+
+@pytest.mark.security
+class TestCaBundle:
+    def _ca(self, tmp_path: Any) -> str:
+        import datetime as dt
+
+        from cryptography import x509
+        from cryptography.hazmat.primitives import hashes, serialization
+        from cryptography.hazmat.primitives.asymmetric import ec
+        from cryptography.x509.oid import NameOID
+
+        key = ec.generate_private_key(ec.SECP256R1())
+        name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "test-ca")])
+        now = dt.datetime.now(dt.UTC)
+        cert = (
+            x509.CertificateBuilder()
+            .subject_name(name)
+            .issuer_name(name)
+            .public_key(key.public_key())
+            .serial_number(1)
+            .not_valid_before(now)
+            .not_valid_after(now + dt.timedelta(days=1))
+            .add_extension(x509.BasicConstraints(ca=True, path_length=0), critical=True)
+            .sign(key, hashes.SHA256())
+        )
+        p = tmp_path / "ca.pem"
+        p.write_bytes(cert.public_bytes(serialization.Encoding.PEM))
+        return str(p)
+
+    def test_accepts_ca_bundle(self, tmp_path: Any) -> None:
+        HttpxTokenEndpoint(ca_bundle_path=self._ca(tmp_path)).close()
+
+    @pytest.mark.parametrize("content", [None, b"not a pem"])
+    def test_rejects_missing_or_invalid_bundle(self, tmp_path: Any, content: bytes | None) -> None:
+        p = tmp_path / "ca.pem"
+        if content is not None:
+            p.write_bytes(content)
+        with pytest.raises(ValueError, match="ca bundle"):
+            HttpxTokenEndpoint(ca_bundle_path=str(p))

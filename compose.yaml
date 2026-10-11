@@ -1,0 +1,105 @@
+# Local ingress stack (ADR-0014, ADR-0015). Generate inputs first: `make certs wheels`.
+#
+#   host ──TLS──▶ gateway ──(core, RIE invoke)──▶ interceptor ──TLS──▶ mock-idp
+#                   │ └────────(agent, TLS)──────▶ agent-runtime ──TLS──▶ mock-idp (JWKS)
+#                   └────────(idp, TLS)──────────▶ mock-idp (inbound JWKS)
+#
+# Only `gateway` (8443) and `mock-idp` (9443, for /_test/login) are published, on 127.0.0.1.
+# agent-runtime is reachable only from the gateway (network isolation, ADR-0014 §1).
+
+x-hardening: &hardening
+  user: "${ATF_UID:?run via make}:${ATF_GID:?run via make}"
+  read_only: true
+  tmpfs: ["/tmp:size=16m,mode=1777"]
+  cap_drop: [ALL]
+  security_opt: ["no-new-privileges:true"]
+  restart: "no"
+
+x-healthcheck: &tls-healthcheck
+  test: ["CMD", "python", "-c", "import ssl,urllib.request as u; u.urlopen('https://localhost:8443/ping', context=ssl.create_default_context(cafile='/run/certs/ca.pem'), timeout=2)"]
+  interval: 5s
+  timeout: 3s
+  retries: 10
+
+services:
+  mock-idp:
+    <<: *hardening
+    build: { context: ., dockerfile: deploy/local/service.Dockerfile, args: { SERVICE: mock-idp } }
+    command: ["mock_idp.app:app_from_env"]
+    environment:
+      ATF_ENV: local
+      ATF_IDP_BASE_URL: https://mock-idp:8443
+      ATF_TOPOLOGY_PATH: /run/config/mock-idp-topology.json
+    volumes:
+      - ./.local-ca/ca.pem:/run/certs/ca.pem:ro
+      - ./.local-ca/mock-idp.pem:/run/certs/tls.pem:ro
+      - ./.local-ca/mock-idp.key:/run/certs/tls.key:ro
+      - ./.local-ca/mock-idp-topology.json:/run/config/mock-idp-topology.json:ro
+    ports: ["127.0.0.1:9443:8443"]
+    networks: [edge, idp]
+    healthcheck: *tls-healthcheck
+
+  interceptor:
+    <<: *hardening
+    build: { context: ., dockerfile: deploy/local/interceptor.Dockerfile }
+    environment:
+      ATF_ENV: local
+      ATF_PROFILES_PATH: /run/config/profiles.json
+      ATF_CA_BUNDLE: /run/certs/ca.pem
+      ATF_LOCAL_KEYS_DIR: /run/keys
+      AWS_REGION: us-east-1
+    volumes:
+      - ./.local-ca/ca.pem:/run/certs/ca.pem:ro
+      - ./.local-ca/profiles.json:/run/config/profiles.json:ro
+      - ./.local-ca/client-keys:/run/keys:ro
+    networks: [core, idp]
+
+  agent-runtime:
+    <<: *hardening
+    build: { context: ., dockerfile: deploy/local/service.Dockerfile, args: { SERVICE: atf-agent-runtime } }
+    command: ["atf_agent_runtime.app:app_from_env"]
+    environment:
+      ATF_RESOURCE_ISSUER: https://mock-idp:8443/oauth2/agent-alpha
+      ATF_RESOURCE_AUDIENCE: api://agent-alpha
+      ATF_RESOURCE_JWKS_URI: https://mock-idp:8443/oauth2/agent-alpha/v1/keys
+      ATF_CA_BUNDLE: /run/certs/ca.pem
+    volumes:
+      - ./.local-ca/ca.pem:/run/certs/ca.pem:ro
+      - ./.local-ca/agent-runtime.pem:/run/certs/tls.pem:ro
+      - ./.local-ca/agent-runtime.key:/run/certs/tls.key:ro
+    networks: [agent, idp]
+    healthcheck:
+      <<: *tls-healthcheck
+      # Its certificate deliberately has no 'localhost' SAN: check by service name, full verification.
+      test: ["CMD", "python", "-c", "import ssl,urllib.request as u; u.urlopen('https://agent-runtime:8443/ping', context=ssl.create_default_context(cafile='/run/certs/ca.pem'), timeout=2)"]
+
+  gateway:
+    <<: *hardening
+    build: { context: ., dockerfile: deploy/local/service.Dockerfile, args: { SERVICE: gateway-emulator } }
+    command: ["gateway_emulator.app:app_from_env"]
+    environment:
+      ATF_GATEWAY_ARN: arn:aws:bedrock-agentcore:us-east-1:123456789012:gateway/gw-alpha
+      ATF_INBOUND_ISSUER: https://mock-idp:8443/oauth2/ingress
+      ATF_INBOUND_AUDIENCE: api://agent-ingress
+      ATF_INBOUND_JWKS_URI: https://mock-idp:8443/oauth2/ingress/v1/keys
+      ATF_INTERCEPTOR_URL: http://interceptor:8080/2015-03-31/functions/function/invocations
+      ATF_TARGET_NAME: agent-alpha
+      ATF_RUNTIME_URL: https://agent-runtime:8443/invocations
+      ATF_CA_BUNDLE: /run/certs/ca.pem
+    volumes:
+      - ./.local-ca/ca.pem:/run/certs/ca.pem:ro
+      - ./.local-ca/gateway.pem:/run/certs/tls.pem:ro
+      - ./.local-ca/gateway.key:/run/certs/tls.key:ro
+    ports: ["127.0.0.1:8443:8443"]
+    networks: [edge, core, agent, idp]
+    depends_on:
+      mock-idp: { condition: service_healthy }
+      agent-runtime: { condition: service_healthy }
+      interceptor: { condition: service_started }
+    healthcheck: *tls-healthcheck
+
+networks:
+  edge: {}
+  core: { internal: true }
+  agent: { internal: true }
+  idp: { internal: true }

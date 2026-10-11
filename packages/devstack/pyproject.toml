@@ -1,0 +1,20 @@
+[project]
+name = "devstack"
+version = "0.0.0"
+description = "DEV ONLY. Generates the ephemeral local CA, service certs, client keys and configs for the compose stack (ADR-0015). Never deployed."
+requires-python = ">=3.12,<3.13"
+dependencies = [
+    "cryptography>=43",
+    "joserfc>=1.0",
+    "trustkit",
+]
+
+[build-system]
+requires = ["hatchling>=1.25"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/devstack"]
+
+[tool.uv.sources]
+trustkit = { workspace = true }

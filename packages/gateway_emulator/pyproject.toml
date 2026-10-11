@@ -4,8 +4,11 @@ version = "0.0.0"
 description = "TEST INFRASTRUCTURE ONLY. Emulates documented AgentCore Gateway behaviour around interceptors (ADR-0014). Never deployed."
 requires-python = ">=3.12,<3.13"
 dependencies = [
+    "fastapi>=0.115",
     "joserfc>=1.0",
     "trustkit",
+    "trustkit-http",
+    "uvicorn>=0.30",
 ]
 
 [build-system]
@@ -17,3 +20,4 @@ packages = ["src/gateway_emulator"]
 
 [tool.uv.sources]
 trustkit = { workspace = true }
+trustkit-http = { workspace = true }

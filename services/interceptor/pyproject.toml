@@ -5,6 +5,8 @@ description = "AgentCore Gateway REQUEST/RESPONSE interceptor Lambda: the single
 requires-python = ">=3.12,<3.13"
 dependencies = [
     "trustkit",
+    "trustkit-aws",
+    "trustkit-http",
 ]
 
 [build-system]
@@ -16,3 +18,5 @@ packages = ["src/atf_interceptor"]
 
 [tool.uv.sources]
 trustkit = { workspace = true }
+trustkit-http = { workspace = true }
+trustkit-aws = { workspace = true }
