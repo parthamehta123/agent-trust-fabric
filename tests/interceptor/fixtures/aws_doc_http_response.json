@@ -1,0 +1,12 @@
+{
+  "interceptorInputVersion": "1.0",
+  "http": {
+    "gatewayRequest": null,
+    "gatewayResponse": {
+      "statusCode": 200,
+      "headers": null,
+      "body": "eyJyZXN1bHQiOiAib2sifQ==",
+      "contentType": "application/json"
+    }
+  }
+}

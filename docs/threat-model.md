@@ -61,11 +61,11 @@ Status values: `planned` · `in-progress` · `done (test: <id>)` · `accepted (A
 | TM-ING-01 | S | Forged or unsigned T1 (`alg=none`, HS256 confusion with the public key used as secret) | Allowlist `alg` (RS256/ES256 only). Key from JWKS by `kid`. Reject any header `jku`/`x5u`. | 1 | done (test: `tests/unit/test_jwt.py::TestAlgorithmAttacks, TestStructuralEdges`) |
 | TM-ING-02 | S | Token for another app replayed here | Exact `iss` and `aud` match. Required `exp`, `iat`, `nbf` with ≤60 s skew. | 1 | done (test: `tests/unit/test_jwt.py::TestClaimAttacks`) |
 | TM-ING-03 | S | JWKS endpoint spoofing / key injection / retired-key reuse | JWKS URL pinned in config (HTTPS only). `jku`/`x5u`/`jwk`/`x5c`/`crit` headers rejected. Unknown-`kid` refresh rate-limited. Proactive refresh (`max_key_age_s` 1 h) so retired keys age out. Cached keys dropped after 24 h without a successful fetch. Duplicate `kid`s, `oct`/private/`enc`/weak (<2048-bit RSA) keys ignored. | 1 | done (test: `tests/unit/test_jwt.py::TestKeySelectionAttacks, TestJwksKeyResolver, TestJwksEntryEdges`) |
-| TM-ING-04 | T | Caller selects a weaker gateway profile via `Host` or a custom header | Profile resolved **only** from `GATEWAY_ARN` in the Lambda client context. A missing value means deny. Caller headers are never consulted (ADR-0012). | 1 | planned |
+| TM-ING-04 | T | Caller selects a weaker gateway profile via `Host` or a custom header | Profile resolved **only** from `GATEWAY_ARN` in the Lambda client context. A missing value means deny. Caller headers are never consulted (ADR-0012). | 1 | done (test: `tests/interceptor/test_handler.py::TestIngressDeny`, `tests/interceptor/test_events.py::TestContext`) |
 | TM-ING-05 | D | Oversized or high-rate requests exhaust the interceptor or IdP quota | Size limits at the proxy. Per-subject rate limit. The T2 cache (ADR-0003) cuts IdP calls. IdP 429 → deny with `Retry-After`. | 2 | planned |
-| TM-ING-06 | I | T1 leaks to the runtime or to logs | Interceptor replaces `Authorization` with T2 and strips T1 from every forwarded header. Log redaction filter. A test asserts that T1 bytes never appear downstream or in captured logs. | 1 | planned |
+| TM-ING-06 | I | T1 leaks to the runtime or to logs | Interceptor replaces `Authorization` with T2 and strips T1 from every forwarded header. Log redaction filter. A test asserts that T1 bytes never appear downstream or in captured logs. | 1 | done (test: `TestIngressAllow::test_caller_credentials_never_forwarded`, repr/log-safety tests across trustkit) |
 | TM-ING-08 | S | Caller pairs their access token with someone else's ID token (or a stale one) to mint delegated tokens as another user | AT ↔ ID-token binding: same `iss`/`sub`, ID-token `aud`/`azp` matches the AT client, client in the profile's `ingress_clients`, required `auth_time` within `max_auth_age_s` (ADR-0006, ADR-0009) | 1 | done (test: `tests/unit/test_binding.py`) |
-| TM-ING-07 | R | User denies having made a request | Audit event per request: `sub`, `client_id`, target, profile, decision, scan verdict, `jti` hashes, correlation ID | 2 | planned |
+| TM-ING-07 | R | User denies having made a request | Audit event per request: `sub`, `client_id`, target, profile, decision, scan verdict, `jti` hashes, correlation ID | 2 | done (test: `TestIngressAllow::test_audit_event`, `TestNeverRaises::test_audit_failure_denies`); sink → CloudWatch in Phase 6 |
 
 ### TB-3 / TB-4 / TB-5: Interceptor ↔ IdP, config and secrets
 
@@ -85,9 +85,9 @@ Status values: `planned` · `in-progress` · `done (test: <id>)` · `accepted (A
 | ID | STRIDE | Threat | Mitigation | Phase | Status |
 |---|---|---|---|---|---|
 | TM-RT-01 | S | Request reaches the runtime bypassing the gateway and interceptor | Runtime validates T2 (`aud` == self, `iss` == resource AS). Network reachability restricted. See OQ-5 (proof of transit). | 2 | planned |
-| TM-RT-02 | T | Interceptor-added actor context forged by the caller | Omitting a header does **not** strip it (A-5), so the interceptor overwrites every reserved `x-atf-*` header on every path. The runtime trusts T2 claims, not headers. Credential headers are never allowlisted (ADR-0012). | 1 | planned |
-| TM-INT-01 | D/E | Interceptor crash or timeout with undocumented gateway semantics (A-6) becomes fail-open | The handler never raises. Every failure returns an explicit `transformedGatewayResponse` deny, with an internal deadline below the Lambda timeout (ADR-0012). | 1 | planned |
-| TM-INT-02 | E | RESPONSE interceptor (which still runs after an MCP short-circuit) turns a request-time deny into a pass | The response path never upgrades a deny. Deny marking can't be forged (ADR-0012). | 1 | planned |
+| TM-RT-02 | T | Interceptor-added actor context forged by the caller | Omitting a header does **not** strip it (A-5), so the interceptor overwrites every reserved `x-atf-*` header on every path. The runtime trusts T2 claims, not headers. Credential headers are never allowlisted (ADR-0012). | 1 | in-progress (interceptor side done: `test_reserved_headers_always_overwritten`; runtime trusting T2 claims in Phase 2; A-5 to verify) |
+| TM-INT-01 | D/E | Interceptor crash or timeout with undocumented gateway semantics (A-6) becomes fail-open | The handler never raises. Every failure returns an explicit `transformedGatewayResponse` deny, with an internal deadline below the Lambda timeout (ADR-0012). | 1 | done (test: `tests/interceptor/test_handler.py::TestNeverRaises`, deadline test); A-6 to verify |
+| TM-INT-02 | E | RESPONSE interceptor (which still runs after an MCP short-circuit) turns a request-time deny into a pass | The response path never upgrades a deny. Deny marking can't be forged (ADR-0012). | 1 | done (test: `TestResponsePath::test_monotonic`, `test_mcp_response_after_our_own_deny_stays_denied`) |
 
 ### TB-7 / TB-8: Agent → tool egress, MCP
 
@@ -97,7 +97,7 @@ Status values: `planned` · `in-progress` · `done (test: <id>)` · `accepted (A
 | TM-TOOL-02 | S | **Token passthrough**: user's token forwarded to a third-party MCP server | Prohibited (MCP authorization spec). Per-target RFC 8693 exchange with `act`, or a per-target credential when `delegation = none` (ADR-0008). | 3 | planned |
 | TM-TOOL-07 | E | Agent-to-agent delegation chains amplify privilege | Delegated tool tokens carry `act` with max depth 1. Nested `act` is denied unless both agent records allow delegation (ADR-0008). | 3–4 | planned |
 | TM-TOOL-03 | T | **Tool poisoning**: MCP server changes tool descriptions after approval (rug pull) | Discovery snapshot hashed at approval. A hash change puts the server in `pending_review` and its tools are hidden until re-approved. | 3 | planned |
-| TM-TOOL-04 | I | Tool result carries injected instructions or exfiltration payloads | RESPONSE-side content scan on tool results. Size caps. Egress allowlist for URLs the agent can reach. | 3 | planned |
+| TM-TOOL-04 | I | Tool result carries injected instructions or exfiltration payloads | RESPONSE-side content scan on tool results. Size caps. Egress allowlist for URLs the agent can reach. | 3 | in-progress (response scanning + local rules done; production scanner adapter in Phase 3) |
 | TM-TOOL-05 | I | MCP server credentials leak via the registry | Credentials only in Secrets Manager. DynamoDB stores the ARN. The API never returns secrets. | 3 | planned |
 | TM-TOOL-06 | S | SSRF via enrolled server URL (e.g. `169.254.169.254`, internal hosts) | URL allowlist: HTTPS only, DNS resolved and checked against private/link-local ranges at enroll **and** call time (DNS rebinding) | 3 | planned |
 
@@ -131,7 +131,7 @@ Status values: `planned` · `in-progress` · `done (test: <id>)` · `accepted (A
 | ID | STRIDE | Threat | Mitigation | Phase | Status |
 |---|---|---|---|---|---|
 | TM-AUD-01 | R/T | Audit records deleted or altered | Separate log account / bucket with S3 Object Lock (compliance mode). Writers have put-only access. | 6 | planned |
-| TM-AUD-02 | I | Audit log becomes a token or PII store | Schema forbids token bodies (only `jti` hashes). Payloads are referenced, not embedded. | 2 | planned |
+| TM-AUD-02 | I | Audit log becomes a token or PII store | Schema forbids token bodies (only `jti` hashes). Payloads are referenced, not embedded. | 2 | done (test: `tests/unit/test_audit.py`) |
 
 ## 5. Accepted residual risks
 
@@ -147,6 +147,7 @@ Status values: `planned` · `in-progress` · `done (test: <id>)` · `accepted (A
 |---|---|---|
 | 2026-10-10 | — | Initial draft |
 | 2026-10-11 | Partha Mehta | Accepted ADR-0006/7/8. Added TM-ING-08 and TM-TOOL-07. |
+| 2026-10-11 | Partha Mehta | Phase 1 complete: interceptor (ADR-0012/0013), scanning, audit. 8 more mitigations done or advanced. Audit failure → deny. |
 | 2026-10-11 | Partha Mehta | A-1 verified against AWS docs (ADR-0012). Added TM-INT-01/02. TM-RT-02 rewritten: omission ≠ removal. |
 | 2026-10-11 | Partha Mehta | Phase 1 checkpoint 5: exchange + T2 cache + hardened HTTP adapter (ADR-0011). TM-EXC-01/02/03/04/08 done; TM-EXC-07 retry part done. |
 | 2026-10-11 | Partha Mehta | Phase 1 checkpoint 4: mock IdP (independent of trustkit; strict A-4; client-assertion and ID-JAG replay protection), 50 conformance tests. |

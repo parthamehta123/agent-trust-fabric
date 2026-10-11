@@ -84,6 +84,11 @@ def profile_doc(**overrides: Any) -> dict[str, Any]:
         "target": {"audience": "api://agent-alpha", "scopes": ["agent.invoke"]},
         "ingress_clients": {CHAT: "local:chat"},
         "max_auth_age_s": 43_200,
+        "ingress_token": {
+            "issuer": f"{BASE}/oauth2/ingress",
+            "audiences": ["api://agent-ingress"],
+            "jwks_uri": f"{BASE}/oauth2/ingress/v1/keys",
+        },
     }
     p.update(overrides)
     return p
@@ -106,6 +111,7 @@ class World:
     profile: GatewayProfile
     at_validator: TokenValidator
     idt_validator: TokenValidator
+    jwks: Callable[[str], KeyResolver]
 
     def login_and_bind(self, user: str = ALICE, client: str = CHAT) -> BoundIdentity:
         at, idt = self.idp.login(user, client, ingress_as_id="ingress")
@@ -192,4 +198,4 @@ def world() -> World:
         jwks(f"{BASE}/oauth2/v1/keys"),
         now=clock,
     )
-    return World(idp, clock, signers, endpoint, cache, exchanger, make_profile(), at_v, idt_v)
+    return World(idp, clock, signers, endpoint, cache, exchanger, make_profile(), at_v, idt_v, jwks)

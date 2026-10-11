@@ -44,6 +44,9 @@ EXPECTED_REASON = {
     "ingress-missing-auth-age": "<profile>: value_error",
     "ingress-with-agent-client": "<profile>: value_error",
     "egress-missing-client": "<profile>: value_error",
+    "ingress-missing-token-config": "<profile>: value_error",
+    "ingress-scan-disabled": "<profile>: value_error",
+    "ingress-token-no-audience": "ingress_token.audiences",
     "egress-with-ingress-field": "<profile>: value_error",
     "timeout-over-max": "scanner_timeout_ms",
     "timeout-zero": "scanner_timeout_ms",
@@ -68,6 +71,11 @@ def ingress_profile(**overrides: Any) -> dict[str, Any]:
         "target": {"audience": "api://agent-alpha", "scopes": ["agent.invoke"]},
         "ingress_clients": {"0oa-chat-frontend": KMS_ARN},
         "max_auth_age_s": 43_200,
+        "ingress_token": {
+            "issuer": "https://idp.example.test/oauth2/ingress",
+            "audiences": ["api://agent-ingress"],
+            "jwks_uri": "https://idp.example.test/oauth2/ingress/v1/keys",
+        },
     }
     p.update(overrides)
     return p
@@ -75,7 +83,7 @@ def ingress_profile(**overrides: Any) -> dict[str, Any]:
 
 def egress_profile(**overrides: Any) -> dict[str, Any]:
     p = ingress_profile(profile_id="tools-egress", gateway_id="gw-tools", flow="egress")
-    del p["ingress_clients"], p["max_auth_age_s"]
+    del p["ingress_clients"], p["max_auth_age_s"], p["ingress_token"]
     p["client"] = {"client_id": "0oa-agent-tools", "signing_key": KMS_ARN}
     p.update(overrides)
     return p
@@ -106,6 +114,14 @@ class TestLoads:
         assert reg.rejected == {}
         assert reg.lookup("gw-ingress-alpha").flow is Flow.INGRESS
         assert reg.lookup("gw-tools").flow is Flow.EGRESS
+
+    def test_egress_may_disable_response_body_scan(self) -> None:
+        """ADR-0012 §6: inference egress moves scanning into the inference gateway."""
+        p = load_profiles(doc(egress_profile(response_body_scan=False))).lookup("gw-tools")
+        assert p.response_body_scan is False
+
+    def test_response_body_scan_defaults_on(self) -> None:
+        assert load_profiles(doc(ingress_profile())).lookup("gw-ingress-alpha").response_body_scan
 
     def test_scanner_defaults_to_fail_closed(self) -> None:
         """ADR-0004: absent field means closed."""
@@ -239,6 +255,12 @@ class TestPerProfileRejection:
                 id="ingress-with-agent-client",
             ),
             pytest.param(egress_profile(client=None), id="egress-missing-client"),
+            pytest.param(ingress_profile(ingress_token=None), id="ingress-missing-token-config"),
+            pytest.param(ingress_profile(response_body_scan=False), id="ingress-scan-disabled"),
+            pytest.param(
+                with_nested(ingress_profile(), "ingress_token.audiences", []),
+                id="ingress-token-no-audience",
+            ),
             pytest.param(egress_profile(max_auth_age_s=60), id="egress-with-ingress-field"),
             pytest.param(
                 ingress_profile(scanner_timeout_ms=PLATFORM_MAX_SCANNER_TIMEOUT_MS + 1),

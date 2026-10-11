@@ -143,6 +143,7 @@ class TestProfileGating:
             flow="egress",
             ingress_clients=None,
             max_auth_age_s=None,
+            ingress_token=None,
             client={"client_id": "0oa-agent", "signing_key": "local:chat"},
         )
         assert_denied(world, ExchangeReason.PROFILE_NOT_INGRESS, egress)

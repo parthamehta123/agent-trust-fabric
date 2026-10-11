@@ -1,6 +1,6 @@
 # ADR-0012: Interceptor contract, header integrity, and failure semantics
 
-- **Status:** accepted
+- **Status:** accepted; §5 superseded by [ADR-0013](0013-monotonic-response-path.md)
 - **Date:** 2026-10-11
 - **Deciders:** Partha Mehta
 - **Resolves:** assumption A-1; opens A-5 and A-6

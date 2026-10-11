@@ -4,6 +4,7 @@ requires-python = "==3.12.*"
 
 [manifest]
 members = [
+    "atf-interceptor",
     "mock-idp",
     "trustkit",
     "trustkit-aws",
@@ -12,6 +13,7 @@ members = [
 
 [manifest.dependency-groups]
 dev = [
+    { name = "atf-interceptor", editable = "services/interceptor" },
     { name = "boto3-stubs", extras = ["kms"], specifier = ">=1.35" },
     { name = "cyclonedx-bom", specifier = ">=4.5" },
     { name = "hypothesis", specifier = ">=6.100" },
@@ -105,6 +107,17 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/86/14/5d4fb733c18a1d69e237c067b183842f3a7ea1c999a51ddc87093a281c88/ast_serialize-0.12.1-cp39-abi3-win_amd64.whl", hash = "sha256:3d6ed63d4fc1ec867b8cb522d58c36df0e8f05e487bea0ffd102043a37636d72", size = 1165798, upload-time = "2026-10-03T12:24:57.052Z" },
     { url = "https://files.pythonhosted.org/packages/f1/f4/b54123680025c0b7253117418f023d1b2487f1102552acbdd9d8ee96b622/ast_serialize-0.12.1-cp39-abi3-win_arm64.whl", hash = "sha256:610a41351de68199de9a1434499083b4256c0df7658ec1cfc0a0a7b20b08d317", size = 1136560, upload-time = "2026-10-03T12:24:58.689Z" },
 ]
+
+[[package]]
+name = "atf-interceptor"
+version = "0.0.0"
+source = { editable = "services/interceptor" }
+dependencies = [
+    { name = "trustkit" },
+]
+
+[package.metadata]
+requires-dist = [{ name = "trustkit", editable = "packages/trustkit" }]
 
 [[package]]
 name = "attrs"

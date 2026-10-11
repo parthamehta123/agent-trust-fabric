@@ -89,6 +89,17 @@ class ClientAuth(_Strict):
     signing_key: KeyRef
 
 
+class IngressToken(_Strict):
+    """How the interceptor re-validates the caller's access token (defence in depth on top of
+    the gateway's own JWT authorizer)."""
+
+    issuer: HttpsUrl
+    audiences: Annotated[
+        frozenset[Annotated[str, StringConstraints(min_length=1)]], Field(min_length=1)
+    ]
+    jwks_uri: HttpsUrl
+
+
 class Target(_Strict):
     audience: Annotated[str, StringConstraints(min_length=1, max_length=512)]
     scopes: Annotated[frozenset[Scope], Field(min_length=1)]
@@ -105,6 +116,9 @@ class GatewayProfile(_Strict):
     target: Target
     scanner_failure_mode: ScannerFailureMode = ScannerFailureMode.CLOSED
     scanner_timeout_ms: Annotated[int, Field(gt=0, le=PLATFORM_MAX_SCANNER_TIMEOUT_MS)] = 800
+    response_body_scan: bool = True
+    """``False`` only for egress profiles, where scanning moves into the inference gateway
+    (ADR-0012 §6). Ingress responses are always scanned."""
 
     # Egress only: the agent's own client (ADR-0007). Required for egress, forbidden for ingress.
     client: ClientAuth | None = None
@@ -114,13 +128,16 @@ class GatewayProfile(_Strict):
     """Front-end clients allowed to drive exchanges for this agent, each with its signing key."""
     max_auth_age_s: Annotated[int, Field(gt=0, le=86_400)] | None = None
     """Upper bound on ``now - IDT.auth_time``: how old the user's actual login may be."""
+    ingress_token: IngressToken | None = None
 
     @model_validator(mode="after")
     def _flow_specific_fields(self) -> Self:
-        ingress_fields = (self.ingress_clients, self.max_auth_age_s)
+        ingress_fields = (self.ingress_clients, self.max_auth_age_s, self.ingress_token)
         if self.flow is Flow.INGRESS:
             if any(f is None for f in ingress_fields) or self.client is not None:
-                raise ValueError("ingress: needs ingress_clients + max_auth_age_s, no client")
+                raise ValueError("ingress: needs ingress_clients/max_auth_age_s/ingress_token")
+            if not self.response_body_scan:
+                raise ValueError("ingress: response_body_scan cannot be disabled")
         elif any(f is not None for f in ingress_fields) or self.client is None:
             raise ValueError("egress: needs client, no ingress-only fields")
         return self
