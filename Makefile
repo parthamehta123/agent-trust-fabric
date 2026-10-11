@@ -9,12 +9,19 @@ PACKAGES := mock-idp gateway-emulator atf-agent-runtime atf-interceptor
 certs:  ## ephemeral CA, service certs, client key, configs -> .local-ca/ (gitignored)
 	uv run python -m devstack.bootstrap --out .local-ca
 
-wheels:  ## hash-pinned requirements + locally built wheels -> build/
-	rm -rf build && mkdir -p build/req build/wheels
-	uv build --all-packages --wheel --out-dir build/wheels
+# Least privilege: each image gets only the first-party wheels it imports (never devstack).
+WHEELS_mock-idp := mock_idp
+WHEELS_gateway-emulator := gateway_emulator trustkit trustkit_http
+WHEELS_atf-agent-runtime := atf_agent_runtime trustkit trustkit_http
+WHEELS_atf-interceptor := atf_interceptor trustkit trustkit_http trustkit_aws
+
+wheels:  ## hash-pinned requirements + per-service first-party wheels -> build/
+	rm -rf build && mkdir -p build/req build/dist
+	uv build --all-packages --wheel --out-dir build/dist
 	for p in $(PACKAGES); do \
 	  uv export --frozen --package $$p --no-emit-workspace --no-dev -o build/req/$$p.txt >/dev/null; \
 	done
+	$(foreach p,$(PACKAGES),mkdir -p build/wheels/$(p) && $(foreach w,$(WHEELS_$(p)),cp build/dist/$(w)-*.whl build/wheels/$(p)/ &&) true;)
 
 up: certs wheels  ## build images and start the stack (waits for health)
 	docker compose up -d --build --wait

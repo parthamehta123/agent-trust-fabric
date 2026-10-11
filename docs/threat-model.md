@@ -147,6 +147,7 @@ Status values: `planned` · `in-progress` · `done (test: <id>)` · `accepted (A
 |---|---|---|
 | 2026-10-10 | — | Initial draft |
 | 2026-10-11 | Partha Mehta | Accepted ADR-0006/7/8. Added TM-ING-08 and TM-TOOL-07. |
+| 2026-10-12 | Partha Mehta | Phase 2b: hardened container stack (ADR-0015). Compose e2e 9/9 over TLS. Container logs scanned: no token or key material. Per-service images contain only their own first-party wheels. |
 | 2026-10-11 | Partha Mehta | Phase 2a: runtime T2 authz (OQ-5, ADR-0014), circuit breaker, header-allowlist policy, gateway emulator, in-process e2e. TM-RT-01/02 and TM-EXC-07 done. |
 | 2026-10-11 | Partha Mehta | Phase 1 complete: interceptor (ADR-0012/0013), scanning, audit. 8 more mitigations done or advanced. Audit failure → deny. |
 | 2026-10-11 | Partha Mehta | A-1 verified against AWS docs (ADR-0012). Added TM-INT-01/02. TM-RT-02 rewritten: omission ≠ removal. |

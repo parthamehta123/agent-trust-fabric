@@ -7,7 +7,7 @@ ARG SERVICE
 ENV PIP_NO_CACHE_DIR=1 PIP_DISABLE_PIP_VERSION_CHECK=1
 RUN python -m venv /opt/venv
 COPY build/req/${SERVICE}.txt /tmp/req.txt
-COPY build/wheels/ /tmp/wheels/
+COPY build/wheels/${SERVICE}/ /tmp/wheels/
 RUN /opt/venv/bin/pip install --require-hashes --no-deps -r /tmp/req.txt \
  && /opt/venv/bin/pip install --no-deps /tmp/wheels/*.whl
 

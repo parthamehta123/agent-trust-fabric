@@ -6,9 +6,10 @@ Identity, authorization and governance plane for AI agents:
 - **Egress:** agent → tools (MCP), models (LiteLLM → Bedrock) and knowledge (Bedrock KB).
 - **Control plane:** an agent registry with security identity records and approval workflow.
 
-> **Status: Phase 1 complete.** The identity spine works end to end against a standards-conformant
-> local IdP: caller → interceptor (bind → ID-JAG exchange → T2 → scan → audit) → runtime.
-> Nothing is deployed yet. Real-AWS verification items are tracked as A-1b/A-5/A-6 and ED-1..4.
+> **Status: Phase 2 complete.** The ingress path runs as hardened containers over TLS:
+> caller → gateway emulator → interceptor (real Lambda image) → mock IdP → agent runtime, which
+> validates T2 itself. Nothing is deployed to AWS yet. Real-AWS verification items are tracked as
+> A-1b/A-5/A-6/A-7 and ED-1..8.
 
 ## Documents
 
@@ -27,6 +28,10 @@ Identity, authorization and governance plane for AI agents:
 | `packages/trustkit_http` | Hardened httpx token-endpoint and JWKS client |
 | `packages/mock_idp` | Test-only IdP (RFC 8693 → ID-JAG, RFC 7523 → RFC 9068), independent of trustkit |
 | `services/interceptor` | AgentCore Gateway REQUEST/RESPONSE interceptor Lambda |
+| `services/agent_runtime` | Reference agent runtime; authorizes from T2 only |
+| `packages/gateway_emulator` | Test-only AgentCore Gateway emulator (documented behaviour) |
+| `packages/devstack` | Dev-only ephemeral CA, certs, keys and config generator |
+| `deploy/local`, `compose.yaml`, `Makefile` | Hardened local container stack |
 
 ## Roadmap
 
@@ -51,3 +56,14 @@ uv run mypy
 uv run pytest
 uvx pre-commit install
 ```
+
+### Local stack (Docker)
+
+```bash
+make up    # ephemeral CA + certs, wheels, build images, start (waits for health)
+make e2e   # HTTPS end-to-end suite; trusts only the ephemeral CA
+make down  # stop; `make clean` also deletes .local-ca/ and build/
+```
+
+Only the gateway (`127.0.0.1:8443`) and the test IdP (`127.0.0.1:9443`) are published. The agent
+runtime is reachable only through the gateway.

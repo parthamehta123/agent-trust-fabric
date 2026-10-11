@@ -8,6 +8,7 @@ from __future__ import annotations
 import json
 import os
 import pathlib
+import ssl
 import subprocess
 from typing import Any
 
@@ -27,7 +28,7 @@ IDP = "https://localhost:9443"
 
 @pytest.fixture(scope="module")
 def http() -> httpx.Client:
-    return httpx.Client(verify=CA, timeout=10)
+    return httpx.Client(verify=ssl.create_default_context(cafile=CA), timeout=10)
 
 
 def login(http: httpx.Client, user: str = "00u-alice") -> dict[str, str]:
