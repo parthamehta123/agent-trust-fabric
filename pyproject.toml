@@ -6,6 +6,7 @@ members = ["packages/*"]
 
 [tool.uv.sources]
 trustkit = { workspace = true }
+trustkit-aws = { workspace = true }
 
 [dependency-groups]
 dev = [
@@ -17,6 +18,9 @@ dev = [
     "ruff>=0.6",
     "pip-audit>=2.7",
     "cyclonedx-bom>=4.5",
+    "trustkit-aws",
+    "moto[kms]>=5.0",
+    "boto3-stubs[kms]>=1.35",
 ]
 
 # --------------------------------------------------------------------------- ruff
@@ -54,8 +58,8 @@ ignore = ["TRY003"]
 python_version = "3.12"
 strict = true
 warn_unreachable = true
-mypy_path = "packages/trustkit/src"
-packages = ["trustkit"]
+mypy_path = ["packages/trustkit/src", "packages/trustkit_aws/src"]
+packages = ["trustkit", "trustkit_aws"]
 
 # --------------------------------------------------------------------------- pytest
 [tool.pytest.ini_options]
@@ -69,7 +73,7 @@ xfail_strict = true
 
 [tool.coverage.run]
 branch = true
-source = ["trustkit"]
+source = ["trustkit", "trustkit_aws"]
 
 [tool.coverage.report]
 fail_under = 95

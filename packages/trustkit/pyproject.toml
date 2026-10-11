@@ -4,6 +4,7 @@ version = "0.0.0"
 description = "Shared identity and trust primitives: token validation, ID-JAG exchange, gateway profiles, fail-closed helpers, audit events."
 requires-python = ">=3.12,<3.13"
 dependencies = [
+    "cryptography>=43",
     "joserfc>=1.0",
     "pydantic>=2.8",
 ]
