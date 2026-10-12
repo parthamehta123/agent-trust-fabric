@@ -67,7 +67,6 @@ flowchart LR
 | `trustkit` | library | JWT validation, ID-JAG/T2 exchange client, T2 cache, profile parsing, audit events, fail-closed helpers | 1 |
 | `mocks/idp` | container | Local OIDC AS. Issues T1, performs token exchange to ID-JAG and the JWT-bearer grant to T2, publishes JWKS. Uses real RS256 signing. | 1 |
 | `services/interceptor` | Lambda | Multi-profile REQUEST/RESPONSE interception. It is the **sole** T1 → ID-JAG → T2 exchange point. It also runs content scanning and stamps actor identity. | 1–2 |
-| `services/ingress_proxy` | Fargate | Edge concerns: T1 pre-validation, request size limits, rate limiting, correlation IDs. Forwards to the ingress gateway. **Does not exchange tokens.** | 2 |
 | Ingress gateway | AgentCore Gateway (managed) | Inbound JWT authorizer, interceptor attachment, routing to runtimes | 2 / 6 |
 | `services/inference_gateway` | LiteLLM on Fargate | The model egress chokepoint: per-agent virtual keys, budgets, model allowlists, audit callbacks. Bedrock is reached through the gateway's IAM role. | 3 |
 | Tool gateway | AgentCore Gateway (managed) | MCP tool targets and semantic tool search. Per-target outbound credentials. | 3 / 6 |
@@ -86,7 +85,6 @@ Decisions: [ADR-0002](adr/0002-single-token-exchange-point.md) (single exchange 
 sequenceDiagram
   autonumber
   participant C as Caller
-  participant P as Ingress proxy
   participant G as Ingress gateway
   participant I as Interceptor (ingress profile)
   participant O as IdP (Org AS)
@@ -94,9 +92,7 @@ sequenceDiagram
   participant S as Content scanner
   participant A as Agent runtime
 
-  C->>P: POST /agents/{target}/invoke  Authorization: T1 (AT) · X-Subject-Token: ID token
-  P->>P: validate T1 (sig, iss, aud, exp, nbf) · size/rate limits
-  P->>G: forward (T1, correlation-id)
+  C->>G: POST /agents/{target}/invoke  Authorization: T1 (AT) · X-Subject-Token: ID token
   G->>G: inbound JWT authorizer re-validates T1
   G->>I: REQUEST interception (headers + body + gateway context)
   I->>I: resolve profile from gateway ARN in context (never from caller headers)
@@ -122,7 +118,7 @@ sequenceDiagram
 
 **What changes compared with a naive design**
 
-- T1 is validated **twice** (proxy and gateway). It is exchanged **once** (interceptor).
+- T1 is validated **twice** (gateway JWT authorizer and interceptor). It is exchanged **once** (interceptor).
 - The profile is selected from **platform-supplied context**. A caller-controlled header
   (`Host` or similar) is never used, because that would let a caller pick a weaker profile.
 - The runtime validates T2 itself. It does not trust the gateway blindly.
@@ -207,7 +203,7 @@ Each question becomes an ADR once it is decided.
   token through to a downstream tool is prohibited. For user-delegated tool calls, do we
   exchange per tool target (the agent acts on behalf of the user, carrying an `act` claim), or
   do tools only ever see the agent's own workload identity?
-- **OQ-4 · Is the ingress proxy needed?** The managed gateway already has a JWT authorizer.
+- ~~**OQ-4**~~ → closed (2026-10-12, [ADR-0016](adr/0016-egress-delegated-tool-tokens.md)): no separate ingress proxy. The AgentCore Gateway JWT authorizer, the interceptor and (Phase 6) AWS WAF cover the edge; a proxy would hold caller tokens without adding a control. **Is the ingress proxy needed?** The managed gateway already has a JWT authorizer.
   The proxy earns its place only if we need edge controls the gateway lacks: WAF, mTLS, custom
   rate limits, request normalization.
 - ~~**OQ-5**~~ → resolved by [ADR-0014](adr/0014-phase2-runtime-trust-local-stack-breaker.md): T2 validation in the runtime plus network isolation. **Proof of transit.** How does a runtime prove that a request came through the gateway

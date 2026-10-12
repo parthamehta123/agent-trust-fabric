@@ -22,7 +22,7 @@ Rules, all of which must hold:
 from __future__ import annotations
 
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from enum import StrEnum
 
@@ -124,3 +124,82 @@ def _id_token_client(idt: VerifiedToken) -> str | None:
     if len(auds) == 1:
         return str(auds[0])
     return azp
+
+
+# ----------------------------------------------------------------------------- egress (ADR-0016)
+
+
+class ActorBindingReason(StrEnum):
+    WORKLOAD_INVALID = "workload_invalid"
+    AGENT_NOT_ALLOWED = "agent_not_allowed"
+    SUBJECT_INVALID = "subject_invalid"
+    DELEGATION_CHAIN = "delegation_chain"
+
+
+class ActorBindingError(Exception):
+    """Log-safe: reasons only."""
+
+    def __init__(self, reason: ActorBindingReason, token_reason: Reason | None = None) -> None:
+        self.reason, self.token_reason = reason, token_reason
+        msg = reason.value if token_reason is None else f"{reason.value} ({token_reason.value})"
+        super().__init__(msg)
+
+
+@dataclass(frozen=True)
+class AgentPolicy:
+    t2_validator: TokenValidator
+    """Validates T2 for *this* agent: its resource AS issuer, its audience, ``typ: at+jwt``."""
+    allowed_scopes: frozenset[str]
+
+
+@dataclass(frozen=True)
+class ActorBinding:
+    agent_client_id: str
+    subject: str
+    allowed_scopes: frozenset[str]
+    workload: VerifiedToken
+    subject_token: VerifiedToken
+    raw_workload: str = field(repr=False)
+    raw_subject: str = field(repr=False)
+
+
+def bind_actor(
+    workload_token: str,
+    subject_token: str,
+    *,
+    workload_validator: TokenValidator,
+    agents: Mapping[str, AgentPolicy],
+) -> ActorBinding:
+    """Bind the agent's workload token (actor) to the user-delegated T2 (subject).
+
+    1. Workload token valid, ``sub == client_id``.                   -> WORKLOAD_INVALID
+    2. ``client_id`` listed in ``agents``.                           -> AGENT_NOT_ALLOWED
+    3. T2 valid under *that agent's* policy (so T2.aud is this agent) -> SUBJECT_INVALID
+       This is the confused-deputy guard: agent A can't spend agent B's T2.
+    4. T2 has no ``act`` (delegation depth <= 1 until Phase 4).     -> DELEGATION_CHAIN
+    """
+    try:
+        workload = workload_validator.validate(workload_token)
+    except TokenValidationError as e:
+        raise ActorBindingError(ActorBindingReason.WORKLOAD_INVALID, e.reason) from None
+    agent = workload.claims.get("client_id")
+    if not isinstance(agent, str) or workload.claims.get("sub") != agent:
+        raise ActorBindingError(ActorBindingReason.WORKLOAD_INVALID, Reason.MALFORMED)
+    policy = agents.get(agent)
+    if policy is None:
+        raise ActorBindingError(ActorBindingReason.AGENT_NOT_ALLOWED)
+    try:
+        subject = policy.t2_validator.validate(subject_token)
+    except TokenValidationError as e:
+        raise ActorBindingError(ActorBindingReason.SUBJECT_INVALID, e.reason) from None
+    if "act" in subject.claims:
+        raise ActorBindingError(ActorBindingReason.DELEGATION_CHAIN)
+    return ActorBinding(
+        agent_client_id=agent,
+        subject=subject.subject,
+        allowed_scopes=policy.allowed_scopes,
+        workload=workload,
+        subject_token=subject,
+        raw_workload=workload_token,
+        raw_subject=subject_token,
+    )

@@ -462,7 +462,7 @@ class TestOracleRejectPaths:
 
     def test_wrong_grant_at_custom_as(self, idp: MockIdp, keys: dict[str, ECKey]) -> None:
         ep = idp.token_endpoint("agent-alpha")
-        form = {"grant_type": GRANT_TOKEN_EXCHANGE, **client_auth(idp, keys[CHAT], CHAT, ep)}
+        form = {"grant_type": "authorization_code", **client_auth(idp, keys[CHAT], CHAT, ep)}
         assert_error(idp.token(ep, form), "unsupported_grant_type")
 
     def test_assertion_issued_in_future(self, idp: MockIdp, keys: dict[str, ECKey]) -> None:

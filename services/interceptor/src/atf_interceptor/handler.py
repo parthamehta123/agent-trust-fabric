@@ -39,7 +39,15 @@ from atf_interceptor.events import (
 )
 from trustkit import policy
 from trustkit.audit import AuditEvent, AuditSink, Decision, jti_hash
-from trustkit.binding import BindingError, BoundIdentity, bind
+from trustkit.binding import (
+    ActorBinding,
+    ActorBindingError,
+    AgentPolicy,
+    BindingError,
+    BoundIdentity,
+    bind,
+    bind_actor,
+)
 from trustkit.exchange import ExchangeError, ExchangeReason, ExchangeResult, KeyResolverFactory
 from trustkit.jwt import TokenValidator, ValidationPolicy
 from trustkit.profiles import (
@@ -76,6 +84,10 @@ _EXCHANGE_DEPENDENCY_FAILURES: Final = frozenset(
 
 class Exchanger(Protocol):
     def exchange(self, bound: BoundIdentity, profile: GatewayProfile) -> ExchangeResult: ...
+
+    def exchange_delegated(
+        self, binding: ActorBinding, profile: GatewayProfile
+    ) -> ExchangeResult: ...
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -152,6 +164,48 @@ def make_handler(deps: InterceptorDeps) -> Handler:
             validators[key] = (at_v, idt_v)
         return validators[key]
 
+    actor_cache: dict[tuple[str, ...], tuple[TokenValidator, dict[str, AgentPolicy]]] = {}
+
+    def actor_validators(
+        profile: GatewayProfile,
+    ) -> tuple[TokenValidator, dict[str, AgentPolicy]]:
+        ei, agents = profile.egress_inbound, profile.agents
+        if ei is None or agents is None:  # schema guarantees this; never rely on assert (-O)
+            raise _Deny(503, "profile_invalid")
+        key = (
+            profile.profile_id,
+            ei.issuer,
+            ei.jwks_uri,
+            *sorted(ei.audiences),
+            *sorted(
+                f"{cid}|{a.t2_issuer}|{a.t2_audience}|{a.t2_jwks_uri}|{','.join(sorted(a.allowed_scopes))}"
+                for cid, a in agents.items()
+            ),
+        )
+        if key not in actor_cache:
+            workload_v = TokenValidator(
+                ValidationPolicy(issuer=ei.issuer, audiences=ei.audiences, expected_typ="at+jwt"),
+                deps.jwks(ei.jwks_uri),
+                now=deps.now,
+            )
+            policies = {
+                cid: AgentPolicy(
+                    TokenValidator(
+                        ValidationPolicy(
+                            issuer=a.t2_issuer,
+                            audiences=frozenset({a.t2_audience}),
+                            expected_typ="at+jwt",
+                        ),
+                        deps.jwks(a.t2_jwks_uri),
+                        now=deps.now,
+                    ),
+                    a.allowed_scopes,
+                )
+                for cid, a in agents.items()
+            }
+            actor_cache[key] = (workload_v, policies)
+        return actor_cache[key]
+
     def handler(event: Mapping[str, Any], context: Any) -> dict[str, Any]:
         request_id = request_id_from_context(context)
         shape = Shape.MCP if isinstance(event, Mapping) and "mcp" in event else Shape.HTTP
@@ -168,7 +222,9 @@ def make_handler(deps: InterceptorDeps) -> Handler:
         try:
             ev = _parse(event)
             shape, jsonrpc_id = ev.shape, ev.jsonrpc_id
-            output, decision, reason, event_type = _decide(call, ev, binding_validators)
+            output, decision, reason, event_type = _decide(
+                call, ev, binding_validators, actor_validators
+            )
         except _Deny as d:
             output = deny(shape, status=d.status, request_id=request_id, jsonrpc_id=jsonrpc_id)
             decision, reason = Decision.DENY, d.reason
@@ -227,6 +283,7 @@ def _decide(
     call: _Call,
     ev: InterceptorEvent,
     binding_validators: Callable[[GatewayProfile], tuple[TokenValidator, TokenValidator]],
+    actor_validators: Callable[[GatewayProfile], tuple[TokenValidator, dict[str, AgentPolicy]]],
 ) -> tuple[dict[str, Any], Decision, str, str]:
     deps = call.deps
     gateway_id = gateway_id_from_context(call.context)
@@ -245,8 +302,8 @@ def _decide(
 
     if ev.phase is Phase.RESPONSE:
         return _decide_response(call, ev, profile)
-    if profile.flow is not Flow.INGRESS:
-        raise _Deny(403, "egress_not_implemented")
+    if profile.flow is Flow.EGRESS:
+        return _decide_egress_request(call, ev, profile, actor_validators)
     return _decide_ingress_request(call, ev, profile, binding_validators)
 
 
@@ -298,7 +355,57 @@ def _decide_ingress_request(
         t2_cached=result.cached,
     )
     call.check_deadline()
+    return _scan_and_forward(call, ev, profile, result.token)
 
+
+def _decide_egress_request(
+    call: _Call,
+    ev: InterceptorEvent,
+    profile: GatewayProfile,
+    actor_validators: Callable[[GatewayProfile], tuple[TokenValidator, dict[str, AgentPolicy]]],
+) -> tuple[dict[str, Any], Decision, str, str]:
+    """ADR-0016: workload token (actor) + T2 (subject) -> delegated tool token with ``act``."""
+    deps = call.deps
+    if ev.headers is None:
+        raise _Deny(503, "headers_not_passed")
+    m = _BEARER.fullmatch(ev.headers.get("authorization") or "")
+    subject_token = ev.headers.get(SUBJECT_TOKEN_HEADER)
+    if m is None or not subject_token:
+        raise _Deny(401, "missing_credentials")
+
+    workload_v, agents = actor_validators(profile)
+    try:
+        binding = bind_actor(
+            m.group(1), subject_token, workload_validator=workload_v, agents=agents
+        )
+    except ActorBindingError as e:
+        raise _Deny(401, f"actor_binding:{e.reason.value}") from None
+    call.fields.update(
+        subject=binding.subject,
+        client_id=binding.agent_client_id,
+        at_jti_sha256=jti_hash(binding.subject_token.jti),
+        actor_jti_sha256=jti_hash(binding.workload.jti),
+    )
+    call.check_deadline()
+
+    try:
+        result = deps.exchanger.exchange_delegated(binding, profile)
+    except ExchangeError as e:
+        status = 503 if e.reason in _EXCHANGE_DEPENDENCY_FAILURES else 403
+        raise _Deny(status, f"exchange:{e.reason.value}") from None
+    call.fields.update(
+        target_audience=profile.target.audience,
+        t2_jti_sha256=jti_hash(result.claims.jti),
+        t2_cached=result.cached,
+    )
+    call.check_deadline()
+    return _scan_and_forward(call, ev, profile, result.token)
+
+
+def _scan_and_forward(
+    call: _Call, ev: InterceptorEvent, profile: GatewayProfile, token: str
+) -> tuple[dict[str, Any], Decision, str, str]:
+    """Scan the request, then forward with ``token`` and every reserved header overwritten."""
     verdict = "none"
     if ev.request_text:
         outcome = _scan(call, profile, ev.request_text, Direction.REQUEST)
@@ -308,7 +415,7 @@ def _decide_ingress_request(
         verdict = "unscanned" if outcome.failed_open else "allow"
 
     headers = {
-        "Authorization": f"Bearer {result.token}",
+        "Authorization": f"Bearer {token}",
         "x-atf-request-id": call.request_id,
         "x-atf-decision": "allow",
         "x-atf-scan-verdict": verdict,

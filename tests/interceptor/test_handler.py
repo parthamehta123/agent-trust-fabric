@@ -17,7 +17,7 @@ from atf_interceptor.handler import RESERVED_HEADERS, Handler, InterceptorDeps, 
 from hypothesis import HealthCheck, given, settings
 from hypothesis import strategies as st
 
-from tests.exchange.conftest import ALICE, CHAT, World, profile_doc
+from tests.exchange.conftest import ALICE, CHAT, World, egress_doc, profile_doc
 from trustkit.audit import AuditEvent, Decision
 from trustkit.exchange import ExchangeError, ExchangeReason
 from trustkit.profiles import ProfileConfigError, ProfileRegistry, load_profiles
@@ -49,17 +49,13 @@ class Mono:
 def registry(
     egress_overrides: dict[str, Any] | None = None, **ingress_overrides: Any
 ) -> ProfileRegistry:
-    egress = profile_doc(
-        profile_id="tools-egress",
-        gateway_id="gw-tools",
-        flow="egress",
-        client={"client_id": "0oa-agent", "signing_key": "local:chat"},
-        **(egress_overrides or {}),
-    )
-    for k in ("ingress_clients", "max_auth_age_s", "ingress_token"):
-        del egress[k]
-    doc = {"version": 1, "profiles": [profile_doc(**ingress_overrides), egress]}
-    return load_profiles(json.dumps(doc))
+    doc = {
+        "version": 1,
+        "profiles": [profile_doc(**ingress_overrides), egress_doc(**(egress_overrides or {}))],
+    }
+    reg = load_profiles(json.dumps(doc))
+    assert not reg.rejected, reg.rejected  # never let a fixture pass by being silently dropped
+    return reg
 
 
 @dataclass
@@ -243,9 +239,11 @@ class TestIngressDeny:
         assert denied_status(hh.call(ev)) == 403
         assert world.idp_calls() == 0
 
-    def test_egress_profile_fails_closed_until_phase3(self, h: Harness) -> None:
+    def test_ingress_credentials_at_tool_gateway_are_refused(self, h: Harness) -> None:
+        """A user's access token + ID token are not an agent's workload token + T2 (ADR-0016)."""
         ev, _, _ = h.login_request()
-        assert denied_status(h.call(ev, h.ctx(arn=TOOLS_ARN))) == 403
+        assert denied_status(h.call(ev, h.ctx(arn=TOOLS_ARN))) == 401
+        assert h.last_audit().reason == "actor_binding:workload_invalid"
 
     def test_headers_not_passed_is_misconfiguration(self, h: Harness) -> None:
         """passRequestHeaders=false on an ingress gateway can never work -> 503, not 401."""

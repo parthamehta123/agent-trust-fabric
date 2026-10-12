@@ -38,7 +38,7 @@
 
 ```mermaid
 flowchart LR
-  C([Caller]) -->|TB-1| P[Ingress proxy] -->|TB-2| G[Ingress gateway] -->|TB-3| I[Interceptor]
+  C([Caller]) -->|TB-1/2| G[Ingress gateway<br/>+ WAF, Phase 6] -->|TB-3| I[Interceptor]
   I -->|TB-4| IDP[(IdP)]
   I -->|TB-5| CFG[(SSM / Secrets / KMS)]
   G -->|TB-6| R[Agent runtime]
@@ -54,7 +54,7 @@ flowchart LR
 
 Status values: `planned` · `in-progress` · `done (test: <id>)` · `accepted (ADR-n)`.
 
-### TB-1 / TB-2: Caller → ingress proxy → gateway
+### TB-1 / TB-2: Caller → ingress gateway (no separate proxy, OQ-4 closed)
 
 | ID | STRIDE | Threat | Mitigation | Phase | Status |
 |---|---|---|---|---|---|
@@ -62,7 +62,7 @@ Status values: `planned` · `in-progress` · `done (test: <id>)` · `accepted (A
 | TM-ING-02 | S | Token for another app replayed here | Exact `iss` and `aud` match. Required `exp`, `iat`, `nbf` with ≤60 s skew. | 1 | done (test: `tests/unit/test_jwt.py::TestClaimAttacks`) |
 | TM-ING-03 | S | JWKS endpoint spoofing / key injection / retired-key reuse | JWKS URL pinned in config (HTTPS only). `jku`/`x5u`/`jwk`/`x5c`/`crit` headers rejected. Unknown-`kid` refresh rate-limited. Proactive refresh (`max_key_age_s` 1 h) so retired keys age out. Cached keys dropped after 24 h without a successful fetch. Duplicate `kid`s, `oct`/private/`enc`/weak (<2048-bit RSA) keys ignored. | 1 | done (test: `tests/unit/test_jwt.py::TestKeySelectionAttacks, TestJwksKeyResolver, TestJwksEntryEdges`) |
 | TM-ING-04 | T | Caller selects a weaker gateway profile via `Host` or a custom header | Profile resolved **only** from `GATEWAY_ARN` in the Lambda client context. A missing value means deny. Caller headers are never consulted (ADR-0012). | 1 | done (test: `tests/interceptor/test_handler.py::TestIngressDeny`, `tests/interceptor/test_events.py::TestContext`) |
-| TM-ING-05 | D | Oversized or high-rate requests exhaust the interceptor or IdP quota | Size limits at the proxy. Per-subject rate limit. The T2 cache (ADR-0003) cuts IdP calls. IdP 429 → deny with `Retry-After`. | 2 | planned |
+| TM-ING-05 | D | Oversized or high-rate requests exhaust the interceptor or IdP quota | Size limits at the gateway/WAF (Phase 6) and runtime (done). Per-subject rate limit. The T2 cache (ADR-0003) cuts IdP calls. IdP 429 → deny with `Retry-After`. | 2 | planned |
 | TM-ING-06 | I | T1 leaks to the runtime or to logs | Interceptor replaces `Authorization` with T2 and strips T1 from every forwarded header. Log redaction filter. A test asserts that T1 bytes never appear downstream or in captured logs. | 1 | done (test: `TestIngressAllow::test_caller_credentials_never_forwarded`, repr/log-safety tests across trustkit) |
 | TM-ING-08 | S | Caller pairs their access token with someone else's ID token (or a stale one) to mint delegated tokens as another user | AT ↔ ID-token binding: same `iss`/`sub`, ID-token `aud`/`azp` matches the AT client, client in the profile's `ingress_clients`, required `auth_time` within `max_auth_age_s` (ADR-0006, ADR-0009) | 1 | done (test: `tests/unit/test_binding.py`) |
 | TM-ING-07 | R | User denies having made a request | Audit event per request: `sub`, `client_id`, target, profile, decision, scan verdict, `jti` hashes, correlation ID | 2 | done (test: `TestIngressAllow::test_audit_event`, `TestNeverRaises::test_audit_failure_denies`); sink → CloudWatch in Phase 6 |
@@ -93,9 +93,9 @@ Status values: `planned` · `in-progress` · `done (test: <id>)` · `accepted (A
 
 | ID | STRIDE | Threat | Mitigation | Phase | Status |
 |---|---|---|---|---|---|
-| TM-TOOL-01 | E | **Confused deputy**: a prompt-injected agent invokes a tool the user may not use, or uses the agent's broader privilege | Tool call authorized against (agent record ∩ user entitlement) by Cedar policy at the gateway, not inside the agent | 3–4 | planned |
-| TM-TOOL-02 | S | **Token passthrough**: user's token forwarded to a third-party MCP server | Prohibited (MCP authorization spec). Per-target RFC 8693 exchange with `act`, or a per-target credential when `delegation = none` (ADR-0008). | 3 | planned |
-| TM-TOOL-07 | E | Agent-to-agent delegation chains amplify privilege | Delegated tool tokens carry `act` with max depth 1. Nested `act` is denied unless both agent records allow delegation (ADR-0008). | 3–4 | planned |
+| TM-TOOL-01 | E | **Confused deputy**: a prompt-injected agent invokes a tool the user may not use, or uses the agent's broader privilege | Tool call authorized against (agent record ∩ user entitlement) by Cedar policy at the gateway, not inside the agent | 3–4 | done for token flow (bind_actor confused-deputy guard + tool-AS actor check: `tests/exchange/test_egress.py`, `tests/interceptor/test_egress_handler.py`); Cedar policy in Phase 4 |
+| TM-TOOL-02 | S | **Token passthrough**: user's token forwarded to a third-party MCP server | Prohibited (MCP authorization spec). Per-target RFC 8693 exchange with `act`, or a per-target credential when `delegation = none` (ADR-0008). | 3 | done (delegated per-target tokens, no passthrough: `test_agent_and_user_tokens_never_forwarded`); `delegation = none` path in 3b |
+| TM-TOOL-07 | E | Agent-to-agent delegation chains amplify privilege | Delegated tool tokens carry `act` with max depth 1. Nested `act` is denied unless both agent records allow delegation (ADR-0008). | 3–4 | done (depth 1 enforced at interceptor and tool AS: `test_delegation_chain_refused`, `test_subject_with_act_refused`) |
 | TM-TOOL-03 | T | **Tool poisoning**: MCP server changes tool descriptions after approval (rug pull) | Discovery snapshot hashed at approval. A hash change puts the server in `pending_review` and its tools are hidden until re-approved. | 3 | planned |
 | TM-TOOL-04 | I | Tool result carries injected instructions or exfiltration payloads | RESPONSE-side content scan on tool results. Size caps. Egress allowlist for URLs the agent can reach. | 3 | in-progress (response scanning + local rules done; production scanner adapter in Phase 3) |
 | TM-TOOL-05 | I | MCP server credentials leak via the registry | Credentials only in Secrets Manager. DynamoDB stores the ARN. The API never returns secrets. | 3 | planned |
@@ -147,6 +147,7 @@ Status values: `planned` · `in-progress` · `done (test: <id>)` · `accepted (A
 |---|---|---|
 | 2026-10-10 | — | Initial draft |
 | 2026-10-11 | Partha Mehta | Accepted ADR-0006/7/8. Added TM-ING-08 and TM-TOOL-07. |
+| 2026-10-12 | Partha Mehta | Review fixes R1-R5 (event-loop blocking, bounded histories, scanner thread cap, SHA-pinned CI, doc drift). OQ-4 closed. Phase 3a (ADR-0016): delegated tool tokens; TM-TOOL-01/02/07 done for the token flow. |
 | 2026-10-12 | Partha Mehta | Phase 2b: hardened container stack (ADR-0015). Compose e2e 9/9 over TLS. Container logs scanned: no token or key material. Per-service images contain only their own first-party wheels. |
 | 2026-10-11 | Partha Mehta | Phase 2a: runtime T2 authz (OQ-5, ADR-0014), circuit breaker, header-allowlist policy, gateway emulator, in-process e2e. TM-RT-01/02 and TM-EXC-07 done. |
 | 2026-10-11 | Partha Mehta | Phase 1 complete: interceptor (ADR-0012/0013), scanning, audit. 8 more mitigations done or advanced. Audit failure → deny. |

@@ -48,6 +48,8 @@ class AuditEvent:
     at_jti_sha256: str | None = None
     idt_jti_sha256: str | None = None
     t2_jti_sha256: str | None = None
+    actor_jti_sha256: str | None = None
+    """Egress (ADR-0016): the agent workload token's jti hash."""
     t2_cached: bool | None = None
     scan_verdict: str | None = None
     scan_categories: tuple[str, ...] = ()

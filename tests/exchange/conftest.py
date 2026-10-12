@@ -26,6 +26,12 @@ from trustkit.signing import InMemoryEs256Signer, KeySigner, SigningError
 
 BASE = "https://idp.example.test"
 CHAT, OTHER = "0oa-chat", "0oa-other"
+AGENT_CLIENT, AGENT_BETA_CLIENT, GATEWAY_CLIENT = (
+    "0oa-agent-alpha",
+    "0oa-agent-beta",
+    "0oa-tool-gateway",
+)
+TOOL_AUDIENCE = "api://tool-tickets"
 ALICE, BOB = "00u-alice", "00u-bob"
 T0 = 1_800_000_000
 
@@ -94,6 +100,42 @@ def profile_doc(**overrides: Any) -> dict[str, Any]:
     return p
 
 
+def egress_doc(**overrides: Any) -> dict[str, Any]:
+    """A valid egress (tool gateway) profile per ADR-0016."""
+    p = profile_doc(
+        profile_id="tools-egress",
+        gateway_id="gw-tools",
+        flow="egress",
+        idp={
+            "issuer": BASE,
+            "jwks_uri": f"{BASE}/oauth2/v1/keys",
+            "token_endpoint": f"{BASE}/oauth2/v1/token",
+            "resource_issuer": f"{BASE}/oauth2/tool-tickets",
+            "resource_token_endpoint": f"{BASE}/oauth2/tool-tickets/v1/token",
+            "resource_jwks_uri": f"{BASE}/oauth2/tool-tickets/v1/keys",
+        },
+        target={"audience": TOOL_AUDIENCE, "scopes": ["tickets.read", "tickets.write"]},
+        client={"client_id": "0oa-tool-gateway", "signing_key": "local:gateway"},
+        egress_inbound={
+            "issuer": f"{BASE}/oauth2/workload",
+            "audiences": ["api://tool-gateway"],
+            "jwks_uri": f"{BASE}/oauth2/workload/v1/keys",
+        },
+        agents={
+            AGENT_CLIENT: {
+                "t2_issuer": f"{BASE}/oauth2/agent-alpha",
+                "t2_audience": "api://agent-alpha",
+                "t2_jwks_uri": f"{BASE}/oauth2/agent-alpha/v1/keys",
+                "allowed_scopes": ["tickets.read"],
+            }
+        },
+    )
+    for k in ("ingress_clients", "max_auth_age_s", "ingress_token"):
+        del p[k]
+    p.update(overrides)
+    return p
+
+
 def make_profile(**overrides: Any) -> GatewayProfile:
     reg = load_profiles(json.dumps({"version": 1, "profiles": [profile_doc(**overrides)]}))
     assert not reg.rejected, reg.rejected
@@ -139,16 +181,21 @@ def world() -> World:
     idp.add_authorization_server(
         AuthorizationServer("ingress", "api://agent-ingress", frozenset({CHAT, OTHER}))
     )
-    idp.add_authorization_server(
-        AuthorizationServer("agent-alpha", "api://agent-alpha", frozenset({CHAT, OTHER}))
-    )
-    idp.add_authorization_server(
-        AuthorizationServer("agent-beta", "api://agent-beta", frozenset({CHAT}))
-    )
+    for server in (
+        AuthorizationServer(
+            "agent-alpha", "api://agent-alpha", frozenset({CHAT, OTHER}), AGENT_CLIENT
+        ),
+        AuthorizationServer("agent-beta", "api://agent-beta", frozenset({CHAT}), AGENT_BETA_CLIENT),
+        AuthorizationServer(
+            "workload", "api://tool-gateway", frozenset({AGENT_CLIENT, AGENT_BETA_CLIENT})
+        ),
+        AuthorizationServer("tool-tickets", TOOL_AUDIENCE, frozenset({GATEWAY_CLIENT})),
+    ):
+        idp.add_authorization_server(server)
 
     signers: dict[str, KeySigner] = {
-        "local:chat": InMemoryEs256Signer(_pem()),
-        "local:other": InMemoryEs256Signer(_pem()),
+        ref: InMemoryEs256Signer(_pem())
+        for ref in ("local:chat", "local:other", "local:agent", "local:agent-beta", "local:gateway")
     }
     for client, ref in ((CHAT, "local:chat"), (OTHER, "local:other")):
         s = signers[ref]
@@ -162,6 +209,25 @@ def world() -> World:
                     idp.issuer("agent-beta"): frozenset({"agent.invoke"}),
                 },
             )
+        )
+
+    for client, ref, policy in (
+        (AGENT_CLIENT, "local:agent", {idp.issuer("workload"): frozenset({"tools.invoke"})}),
+        (
+            AGENT_BETA_CLIENT,
+            "local:agent-beta",
+            {idp.issuer("workload"): frozenset({"tools.invoke"})},
+        ),
+        (
+            GATEWAY_CLIENT,
+            "local:gateway",
+            {idp.issuer("tool-tickets"): frozenset({"tickets.read", "tickets.write"})},
+        ),
+    ):
+        sg = signers[ref]
+        assert isinstance(sg, InMemoryEs256Signer)
+        idp.register_client(
+            ClientRegistration(client, {"keys": [{**sg.public_jwk(), "kid": sg.key_id}]}, policy)
         )
 
     resolvers: dict[str, KeyResolver] = {}
@@ -199,3 +265,71 @@ def world() -> World:
         now=clock,
     )
     return World(idp, clock, signers, endpoint, cache, exchanger, make_profile(), at_v, idt_v, jwks)
+
+
+# ----------------------------------------------------------------------------- egress helpers
+
+
+def mint_t2(
+    world: World, user: str = ALICE, agent_as: str = "agent-alpha", client: str = CHAT
+) -> str:
+    """A genuine ingress T2 for ``user`` at ``agent_as`` (ID-JAG + JWT-bearer via the mock)."""
+    from trustkit.signing import build_client_assertion
+
+    idp = world.idp
+    _, idt = idp.login(user, client, ingress_as_id="ingress")
+    ref = "local:chat" if client == CHAT else "local:other"
+
+    def assertion(ep: str) -> str:
+        return build_client_assertion(
+            world.signers[ref], client_id=client, token_endpoint=ep, now=world.clock
+        )
+
+    ep = idp.token_endpoint()
+    jag = idp.token(
+        ep,
+        {
+            "grant_type": "urn:ietf:params:oauth:grant-type:token-exchange",
+            "requested_token_type": "urn:ietf:params:oauth:token-type:id-jag",
+            "subject_token": idt,
+            "subject_token_type": "urn:ietf:params:oauth:token-type:id_token",
+            "audience": idp.issuer(agent_as),
+            "scope": "agent.invoke",
+            "client_assertion_type": "urn:ietf:params:oauth:client-assertion-type:jwt-bearer",
+            "client_assertion": assertion(ep),
+        },
+    )
+    assert jag.status == 200, jag.body
+    ep2 = idp.token_endpoint(agent_as)
+    t2 = idp.token(
+        ep2,
+        {
+            "grant_type": "urn:ietf:params:oauth:grant-type:jwt-bearer",
+            "assertion": jag.body["access_token"],
+            "client_assertion_type": "urn:ietf:params:oauth:client-assertion-type:jwt-bearer",
+            "client_assertion": assertion(ep2),
+        },
+    )
+    assert t2.status == 200, t2.body
+    return str(t2.body["access_token"])
+
+
+def mint_workload(world: World, agent: str = AGENT_CLIENT) -> str:
+    """A genuine workload token for ``agent`` via client_credentials at the workload AS."""
+    from trustkit.signing import build_client_assertion
+
+    ref = {AGENT_CLIENT: "local:agent", AGENT_BETA_CLIENT: "local:agent-beta"}[agent]
+    ep = world.idp.token_endpoint("workload")
+    r = world.idp.token(
+        ep,
+        {
+            "grant_type": "client_credentials",
+            "scope": "tools.invoke",
+            "client_assertion_type": "urn:ietf:params:oauth:client-assertion-type:jwt-bearer",
+            "client_assertion": build_client_assertion(
+                world.signers[ref], client_id=agent, token_endpoint=ep, now=world.clock
+            ),
+        },
+    )
+    assert r.status == 200, r.body
+    return str(r.body["access_token"])

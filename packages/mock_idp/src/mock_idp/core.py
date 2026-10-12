@@ -60,6 +60,8 @@ GRANT_TOKEN_EXCHANGE: Final = "urn:ietf:params:oauth:grant-type:token-exchange" 
 GRANT_JWT_BEARER: Final = "urn:ietf:params:oauth:grant-type:jwt-bearer"
 TOKEN_TYPE_ID_JAG: Final = "urn:ietf:params:oauth:token-type:id-jag"  # noqa: S105 - protocol URN, not a secret
 TOKEN_TYPE_ID_TOKEN: Final = "urn:ietf:params:oauth:token-type:id_token"  # noqa: S105 - protocol URN, not a secret
+GRANT_CLIENT_CREDENTIALS: Final = "client_credentials"
+TOKEN_TYPE_ACCESS_TOKEN: Final = "urn:ietf:params:oauth:token-type:access_token"  # noqa: S105 - URN
 CLIENT_ASSERTION_TYPE: Final = "urn:ietf:params:oauth:client-assertion-type:jwt-bearer"
 ID_JAG_TYP: Final = "oauth-id-jag+jwt"
 ACCESS_TOKEN_TYP: Final = "at+jwt"  # noqa: S105 - protocol URN, not a secret
@@ -90,6 +92,9 @@ class AuthorizationServer:
     """``aud`` of access tokens this AS issues (the agent API, or the ingress API)."""
     clients: frozenset[str]
     """Clients registered at this AS (allowed to redeem ID-JAGs / receive tokens)."""
+    agent_client_id: str | None = None
+    """The agent whose API ``resource_audience`` is. A delegation exchange presenting a subject
+    token from this AS must have this agent as its actor (AS-side confused-deputy guard)."""
 
 
 class _OAuthError(Exception):
@@ -236,6 +241,11 @@ class MockIdp:
             return self._token_exchange(endpoint, form)
         for as_id in self._servers:
             if endpoint == self.token_endpoint(as_id):
+                grant = form.get("grant_type")
+                if grant == GRANT_CLIENT_CREDENTIALS:
+                    return self._client_credentials(as_id, endpoint, form)
+                if grant == GRANT_TOKEN_EXCHANGE:
+                    return self._delegation_exchange(as_id, endpoint, form)
                 return self._jwt_bearer(as_id, endpoint, form)
         raise _OAuthError("invalid_request", "unknown token endpoint", 404)
 
@@ -344,6 +354,133 @@ class MockIdp:
                 "scope": t2_claims["scope"],
             },
         )
+
+    def _client_credentials(
+        self, as_id: str, endpoint: str, form: Mapping[str, str]
+    ) -> TokenResponse:
+        """Workload token: client registered at this AS, scopes within its policy for this AS.
+
+        at+jwt with sub = client_id = the client, aud = the AS's resource audience.
+        """
+        client_id, server = self._registered_client(as_id, endpoint, form)
+        scope = self._granted_scope(client_id, as_id, form)
+        now = self._now()
+        claims = {
+            "iss": self.issuer(as_id),
+            "sub": client_id,
+            "client_id": client_id,
+            "aud": server.resource_audience,
+            "scope": scope,
+            "jti": str(uuid.uuid4()),
+            "iat": now,
+            "exp": now + self._at_ttl,
+        }
+        token = self._sign(self._server_keys[as_id], ACCESS_TOKEN_TYP, claims)
+        return TokenResponse(
+            200,
+            {
+                "access_token": token,
+                "token_type": "Bearer",
+                "expires_in": self._at_ttl,
+                "scope": scope,
+            },
+        )
+
+    def _delegation_exchange(
+        self, as_id: str, endpoint: str, form: Mapping[str, str]
+    ) -> TokenResponse:
+        """RFC 8693 delegation at a tool AS (ADR-0016 §5).
+
+        Requires: authenticated client registered here with a policy for this AS; subject and
+        actor tokens both ``access_token`` type, both at+jwt signed by a custom AS of this IdP,
+        unexpired; subject without ``act``; the subject's issuing AS ``agent_client_id`` equal to
+        the actor's ``client_id``; ``resource`` = this AS's audience; scopes within policy.
+        Issues at+jwt: sub = subject.sub, act = {sub: actor client}, client_id = caller.
+        """
+        client_id, server = self._registered_client(as_id, endpoint, form)
+        rtt = form.get("requested_token_type")
+        if rtt is not None and rtt != TOKEN_TYPE_ACCESS_TOKEN:
+            raise _OAuthError("invalid_request", "requested_token_type must be access_token")
+        for name in ("subject", "actor"):
+            if (
+                not form.get(f"{name}_token")
+                or form.get(f"{name}_token_type") != TOKEN_TYPE_ACCESS_TOKEN
+            ):
+                raise _OAuthError("invalid_request", f"{name}_token must be an access_token")
+        subject_as, subject = self._verify_issued_access_token(form["subject_token"])
+        _, actor = self._verify_issued_access_token(form["actor_token"])
+        if "act" in subject:
+            raise _OAuthError("invalid_grant", "subject token is already delegated")
+        actor_client = actor.get("client_id")
+        if (
+            not isinstance(actor_client, str)
+            or self._servers[subject_as].agent_client_id != actor_client
+        ):
+            raise _OAuthError(
+                "invalid_grant", "actor is not the agent the subject token was issued to"
+            )
+        audience = form.get("audience")
+        if audience is not None and audience != self.issuer(as_id):
+            raise _OAuthError("invalid_target", "unknown audience")
+        if form.get("resource") != server.resource_audience:
+            raise _OAuthError("invalid_target", "unknown resource")
+        scope = self._granted_scope(client_id, as_id, form)
+        now = self._now()
+        claims = {
+            "iss": self.issuer(as_id),
+            "sub": subject["sub"],
+            "aud": server.resource_audience,
+            "client_id": client_id,
+            "act": {"sub": actor_client},
+            "scope": scope,
+            "jti": str(uuid.uuid4()),
+            "iat": now,
+            "exp": now + self._at_ttl,
+        }
+        token = self._sign(self._server_keys[as_id], ACCESS_TOKEN_TYP, claims)
+        return TokenResponse(
+            200,
+            {
+                "access_token": token,
+                "issued_token_type": TOKEN_TYPE_ACCESS_TOKEN,
+                "token_type": "Bearer",
+                "expires_in": self._at_ttl,
+                "scope": scope,
+            },
+        )
+
+    def _registered_client(
+        self, as_id: str, endpoint: str, form: Mapping[str, str]
+    ) -> tuple[str, AuthorizationServer]:
+        client_id = self._authenticate_client(endpoint, form)
+        server = self._servers[as_id]
+        if client_id not in server.clients:
+            raise _OAuthError("invalid_client", "client not registered at this server", 401)
+        return client_id, server
+
+    def _granted_scope(self, client_id: str, as_id: str, form: Mapping[str, str]) -> str:
+        allowed = self._clients[client_id].exchange_policy.get(self.issuer(as_id))
+        if allowed is None:
+            raise _OAuthError("unauthorized_client", "client has no policy at this server")
+        requested = frozenset((form.get("scope") or "").split()) or allowed
+        if not requested <= allowed:
+            raise _OAuthError("invalid_scope", "requested scope exceeds policy")
+        return " ".join(sorted(requested))
+
+    def _verify_issued_access_token(self, token: str) -> tuple[str, dict[str, Any]]:
+        """An at+jwt issued by one of *our* custom ASes, unexpired. -> (issuing as_id, claims)."""
+        try:
+            iss = _unverified_claims(token).get("iss")
+        except _OAuthError:
+            raise _OAuthError("invalid_grant", "token malformed") from None
+        as_id = next((a for a in self._servers if self.issuer(a) == iss), None)
+        if as_id is None:
+            raise _OAuthError("invalid_grant", "token issuer unknown")
+        verified = self._verify(token, self._server_keys[as_id], "invalid_grant", "token invalid")
+        if verified.header.get("typ") != ACCESS_TOKEN_TYP:
+            raise _OAuthError("invalid_grant", "token is not an access token")
+        self._require_unexpired(verified.claims, "invalid_grant", "token expired")
+        return as_id, dict(verified.claims)
 
     # -- client authentication (RFC 7523 §2.2) -------------------------------------------------
 

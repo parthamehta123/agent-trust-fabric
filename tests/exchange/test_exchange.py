@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from typing import Any
 
 import pytest
@@ -15,6 +16,7 @@ from trustkit.exchange import (
     ExchangeReason,
     HttpResult,
 )
+from trustkit.profiles import load_profiles
 
 
 def assert_denied(
@@ -139,14 +141,10 @@ class TestCaching:
 @pytest.mark.security
 class TestProfileGating:
     def test_egress_profile_refused(self, world: World) -> None:
-        egress = make_profile(
-            flow="egress",
-            ingress_clients=None,
-            max_auth_age_s=None,
-            ingress_token=None,
-            client={"client_id": "0oa-agent", "signing_key": "local:chat"},
-        )
-        assert_denied(world, ExchangeReason.PROFILE_NOT_INGRESS, egress)
+        from tests.exchange.conftest import egress_doc
+
+        reg = load_profiles(json.dumps({"version": 1, "profiles": [egress_doc()]}))
+        assert_denied(world, ExchangeReason.PROFILE_NOT_INGRESS, reg.lookup("gw-tools"))
 
     def test_disabled(self, world: World) -> None:
         assert_denied(world, ExchangeReason.PROFILE_DISABLED, make_profile(enabled=False))

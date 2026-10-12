@@ -23,7 +23,7 @@ from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import Any, Final, Protocol
 
-from trustkit.binding import BoundIdentity
+from trustkit.binding import ActorBinding, BoundIdentity
 from trustkit.breaker import BreakerRegistry
 from trustkit.cache import TokenCache, cache_key
 from trustkit.jwt import (
@@ -40,6 +40,7 @@ from trustkit.signing import KeySigner, SigningError, build_client_assertion
 GRANT_TOKEN_EXCHANGE: Final = "urn:ietf:params:oauth:grant-type:token-exchange"  # noqa: S105 - protocol URN
 GRANT_JWT_BEARER: Final = "urn:ietf:params:oauth:grant-type:jwt-bearer"
 TOKEN_TYPE_ID_JAG: Final = "urn:ietf:params:oauth:token-type:id-jag"  # noqa: S105 - protocol URN
+TOKEN_TYPE_ACCESS_TOKEN: Final = "urn:ietf:params:oauth:token-type:access_token"  # noqa: S105 - URN
 TOKEN_TYPE_ID_TOKEN: Final = "urn:ietf:params:oauth:token-type:id_token"  # noqa: S105 - protocol URN
 CLIENT_ASSERTION_TYPE: Final = "urn:ietf:params:oauth:client-assertion-type:jwt-bearer"
 ID_JAG_TYP: Final = "oauth-id-jag+jwt"
@@ -84,6 +85,9 @@ class TokenEndpoint(Protocol):
 
 class ExchangeReason(StrEnum):
     PROFILE_NOT_INGRESS = "profile_not_ingress"
+    PROFILE_NOT_EGRESS = "profile_not_egress"
+    AGENT_NOT_CONFIGURED = "agent_not_configured"
+    DELEGATED_INVALID = "delegated_invalid"
     PROFILE_DISABLED = "profile_disabled"
     CLIENT_NOT_CONFIGURED = "client_not_configured"
     SIGNING_FAILED = "signing_failed"
@@ -231,6 +235,89 @@ class IdJagExchanger:
         result = ExchangeResult(token=t2, claims=t2_claims, cached=False)
         if key is not None:
             self._cache.put(key, result, exp=int(t2_claims.claims["exp"]))
+        return result
+
+    def exchange_delegated(self, binding: ActorBinding, profile: GatewayProfile) -> ExchangeResult:
+        """ADR-0016 §5-§6: T2 (subject) + workload token (actor) -> tool token with ``act``.
+
+        Client auth is the tool gateway's own client (``profile.client``). Requested scope is
+        ``target.scopes ∩ binding.allowed_scopes``. The result is validated (iss, aud, typ, sub,
+        act.sub, no nested act, client_id, scope subset) before it is cached or returned.
+        """
+        if profile.flow is not Flow.EGRESS:
+            raise ExchangeError(ExchangeReason.PROFILE_NOT_EGRESS)
+        if not profile.enabled:
+            raise ExchangeError(ExchangeReason.PROFILE_DISABLED)
+        if profile.client is None or binding.agent_client_id not in (profile.agents or {}):
+            raise ExchangeError(ExchangeReason.AGENT_NOT_CONFIGURED)
+
+        key = cache_key(
+            at_jti=binding.subject_token.jti,
+            idt_jti=binding.workload.jti,
+            subject=binding.subject,
+            audience=profile.target.audience,
+            profile_id=f"{profile.profile_id}#delegated#{binding.agent_client_id}",
+        )
+        if key is not None and (hit := self._cache.get(key)) is not None:
+            return dataclasses.replace(hit, cached=True)
+
+        try:
+            signer = self._signers(profile.client.signing_key)
+        except SigningError:
+            raise ExchangeError(ExchangeReason.SIGNING_FAILED) from None
+
+        idp, step = profile.idp, "delegation"
+        requested = profile.target.scopes & binding.allowed_scopes
+        if not requested:
+            raise ExchangeError(ExchangeReason.T2_SCOPE_ESCALATION, step=step)
+        body = self._call(
+            step,
+            idp.resource_token_endpoint,
+            signer,
+            profile.client.client_id,
+            {
+                "grant_type": GRANT_TOKEN_EXCHANGE,
+                "requested_token_type": TOKEN_TYPE_ACCESS_TOKEN,
+                "subject_token": binding.raw_subject,
+                "subject_token_type": TOKEN_TYPE_ACCESS_TOKEN,
+                "actor_token": binding.raw_workload,
+                "actor_token_type": TOKEN_TYPE_ACCESS_TOKEN,
+                "audience": idp.resource_issuer,
+                "resource": profile.target.audience,
+                "scope": " ".join(sorted(requested)),
+            },
+        )
+        if body.get("issued_token_type") != TOKEN_TYPE_ACCESS_TOKEN or not _token_type_is(
+            body, "bearer"
+        ):
+            raise ExchangeError(ExchangeReason.MALFORMED_RESPONSE, step=step)
+        token = _token_field(body, step)
+        verified = self._validate(
+            token,
+            ExchangeReason.DELEGATED_INVALID,
+            step,
+            issuer=idp.resource_issuer,
+            audience=profile.target.audience,
+            typ=ACCESS_TOKEN_TYP,
+            jwks_uri=idp.resource_jwks_uri,
+        )
+        c = verified.claims
+        act = c.get("act")
+        if (
+            c.get("sub") != binding.subject
+            or c.get("client_id") != profile.client.client_id
+            or not isinstance(act, dict)
+            or set(act) != {"sub"}  # exactly one level: no nested act (TM-TOOL-07)
+            or act.get("sub") != binding.agent_client_id
+        ):
+            raise ExchangeError(ExchangeReason.DELEGATED_INVALID, step=step)
+        granted = c.get("scope")
+        if not isinstance(granted, str) or not set(granted.split()) <= requested:
+            raise ExchangeError(ExchangeReason.T2_SCOPE_ESCALATION, step=step)
+
+        result = ExchangeResult(token=token, claims=verified, cached=False)
+        if key is not None:
+            self._cache.put(key, result, exp=int(c["exp"]))
         return result
 
     # -- helpers ----------------------------------------------------------------------------------
