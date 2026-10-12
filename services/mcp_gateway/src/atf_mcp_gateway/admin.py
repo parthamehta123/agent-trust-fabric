@@ -20,6 +20,7 @@ from atf_mcp_gateway.servers import (
     ServerRecord,
     ServerStatus,
     ServerStore,
+    SnapshotTooLargeError,
     StoreConflictError,
 )
 from atf_mcp_gateway.snapshot import SnapshotError, take_snapshot
@@ -182,6 +183,9 @@ class AdminService:
         self._put(updated, expected=record.status)
         return updated
 
+    def list_servers(self, principal: AdminPrincipal) -> list[ServerRecord]:
+        return sorted(self._store.list(), key=lambda r: r.server_id)
+
     def disable(self, principal: AdminPrincipal, server_id: str) -> ServerRecord:
         record = self._get(server_id)
         updated = dataclasses.replace(record, status=ServerStatus.DISABLED)
@@ -199,3 +203,5 @@ class AdminService:
             self._store.put(record, expected_status=expected)
         except StoreConflictError:
             raise AdminError(AdminFailure.CONFLICT) from None
+        except SnapshotTooLargeError:
+            raise AdminError(AdminFailure.INVALID, "tool snapshot too large") from None

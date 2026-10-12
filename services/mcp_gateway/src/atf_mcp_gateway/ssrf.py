@@ -32,7 +32,45 @@ Resolver = Callable[[str, int], list[str]]
 DEFAULT_MAX_RESPONSE_BYTES: Final = 1_048_576
 _NAT64: Final = ipaddress.ip_network("64:ff9b::/96")
 _SIXTOFOUR: Final = ipaddress.ip_network("2002::/16")
+_RFC1918: Final = tuple(
+    ipaddress.IPv4Network(n) for n in ("10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16")
+)
+_ULA: Final = ipaddress.IPv6Network("fc00::/7")
 _LABEL: Final = re.compile(r"^(?!-)[a-z0-9-]{1,63}(?<!-)$")
+
+
+Network = ipaddress.IPv4Network | ipaddress.IPv6Network
+
+
+class SsrfConfigError(ValueError):
+    """Unsafe or out-of-place SSRF allowlist configuration (cold-start failure)."""
+
+
+def parse_local_allowlist(env: Mapping[str, str]) -> frozenset[Network]:
+    """``ATF_SSRF_ALLOW_CIDRS`` -> networks (ADR-0018 §1).
+
+    Empty or unset gives an empty set. Set while ``ATF_ENV != "local"`` raises. Each CIDR must be
+    RFC 1918 or ULA, have a prefix of at least /16 (v4) or /48 (v6), and not overlap link-local.
+    """
+    raw = env.get("ATF_SSRF_ALLOW_CIDRS", "").strip()
+    if not raw:
+        return frozenset()
+    if env.get("ATF_ENV") != "local":
+        raise SsrfConfigError("an SSRF allowlist is only permitted with ATF_ENV=local")
+    nets: set[Network] = set()
+    for part in raw.split(","):
+        try:
+            net = ipaddress.ip_network(part.strip(), strict=True)
+        except ValueError:
+            raise SsrfConfigError("invalid CIDR in SSRF allowlist") from None
+        if isinstance(net, ipaddress.IPv4Network):
+            ok = net.prefixlen >= 16 and any(net.subnet_of(r) for r in _RFC1918)
+        else:
+            ok = net.prefixlen >= 48 and net.subnet_of(_ULA)
+        if not ok:
+            raise SsrfConfigError("SSRF allowlist entries must be narrow private test subnets")
+        nets.add(net)
+    return frozenset(nets)
 
 
 class SsrfError(ValueError):
@@ -73,7 +111,12 @@ def is_forbidden_ip(ip: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
     )
 
 
-def vet_url(url: str, *, resolver: Resolver = default_resolver) -> VettedTarget:
+def vet_url(
+    url: str,
+    *,
+    resolver: Resolver = default_resolver,
+    allow: frozenset[Network] = frozenset(),
+) -> VettedTarget:
     if "\\" in url or "#" in url or not url.startswith("https://"):
         raise SsrfError("url must be https without fragments or backslashes")
     parts = urlsplit(url)
@@ -107,7 +150,7 @@ def vet_url(url: str, *, resolver: Resolver = default_resolver) -> VettedTarget:
         ips = [ipaddress.ip_address(a) for a in answers]
     except ValueError:
         raise SsrfError("resolver returned an invalid address") from None
-    if any(is_forbidden_ip(ip) for ip in ips):
+    if any(is_forbidden_ip(ip) and not any(ip in net for net in allow) for ip in ips):
         # One internal answer poisons the set; never say which (log-safe, no recon help).
         raise SsrfError("hostname resolves to a non-public address")
     path = (parts.path or "/") + (f"?{parts.query}" if parts.query else "")
@@ -123,8 +166,10 @@ class PinnedClient:
         timeout_s: float = 10.0,
         max_response_bytes: int = DEFAULT_MAX_RESPONSE_BYTES,
         transport: httpx.BaseTransport | None = None,
+        allow: frozenset[Network] = frozenset(),
     ) -> None:
         self._resolver = resolver
+        self._allow = allow
         self._max = max_response_bytes
         self._client = httpx.Client(
             verify=tls_context(ca_bundle_path),
@@ -139,7 +184,7 @@ class PinnedClient:
         """Vet, pin, POST. Returns (status, JSON object or None if unacceptable).
 
         Raises ``SsrfError`` (vetting) or ``httpx.HTTPError`` (transport)."""
-        t = vet_url(url, resolver=self._resolver)  # every call: defeats DNS rebinding
+        t = vet_url(url, resolver=self._resolver, allow=self._allow)  # every call: no rebinding
         host = f"[{t.ip}]" if ":" in t.ip else t.ip
         host_header = t.hostname if t.port == 443 else f"{t.hostname}:{t.port}"
         request = self._client.build_request(

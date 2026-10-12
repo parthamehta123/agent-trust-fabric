@@ -49,6 +49,10 @@ class ServerRecord:
         )
 
 
+class SnapshotTooLargeError(Exception):
+    """The serialised record exceeds the store's size budget (ADR-0018 §3)."""
+
+
 class StoreConflictError(Exception):
     """Optimistic-concurrency check failed (the record changed underneath us)."""
 

@@ -4,9 +4,12 @@ version = "0.0.0"
 description = "Self-hosted MCP gateway for non-AgentCore agents: delegated credentials, tool pinning, SSRF-safe egress (ADR-0017)."
 requires-python = ">=3.12,<3.13"
 dependencies = [
+    "boto3>=1.35",
+    "fastapi>=0.115",
     "httpx>=0.27",
     "trustkit",
     "trustkit-http",
+    "uvicorn>=0.30",
 ]
 
 [build-system]
