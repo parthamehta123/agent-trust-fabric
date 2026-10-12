@@ -1,0 +1,176 @@
+"""SSRF-safe egress to enrolled MCP servers (ADR-0017 §4, TM-TOOL-06).
+
+``vet_url`` accepts only ``https://<dns-name>[:port]/<path>`` (no userinfo, fragment or IP
+literal). It resolves the name and rejects it if **any** resolved address is non-public: private,
+loopback, link-local (incl. 169.254.169.254), CGNAT 100.64/10, multicast, reserved, unspecified,
+benchmarking, documentation, or IPv4-mapped/NAT64 forms of those. One bad answer poisons the set,
+so a resolver can't mix in an internal address.
+
+``PinnedClient`` re-vets on **every call** and connects to the vetted IP, with ``Host`` and SNI set
+to the hostname. The certificate is checked against the hostname, so a DNS rebind between check
+and connect can't redirect the request. Redirects are never followed and bodies are size-capped.
+"""
+
+from __future__ import annotations
+
+import ipaddress
+import json
+import re
+import socket
+from collections.abc import Callable, Mapping
+from dataclasses import dataclass
+from typing import Any, Final
+from urllib.parse import urlsplit
+
+import httpx
+
+from trustkit_http.endpoint import tls_context
+
+Resolver = Callable[[str, int], list[str]]
+"""(hostname, port) -> IP address strings."""
+
+DEFAULT_MAX_RESPONSE_BYTES: Final = 1_048_576
+_NAT64: Final = ipaddress.ip_network("64:ff9b::/96")
+_SIXTOFOUR: Final = ipaddress.ip_network("2002::/16")
+_LABEL: Final = re.compile(r"^(?!-)[a-z0-9-]{1,63}(?<!-)$")
+
+
+class SsrfError(ValueError):
+    """Log-safe: names the rule broken, never the resolved addresses."""
+
+
+@dataclass(frozen=True)
+class VettedTarget:
+    hostname: str
+    port: int
+    path: str
+    ip: str
+
+
+def default_resolver(hostname: str, port: int) -> list[str]:
+    return sorted(
+        {str(ai[4][0]) for ai in socket.getaddrinfo(hostname, port, type=socket.SOCK_STREAM)}
+    )
+
+
+def is_forbidden_ip(ip: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
+    if isinstance(ip, ipaddress.IPv6Address):
+        embedded: ipaddress.IPv4Address | None = ip.ipv4_mapped
+        if embedded is None and ip in _NAT64:
+            embedded = ipaddress.IPv4Address(int(ip) & 0xFFFFFFFF)
+        if embedded is None and ip in _SIXTOFOUR:
+            embedded = ipaddress.IPv4Address((int(ip) >> 80) & 0xFFFFFFFF)
+        if embedded is not None and is_forbidden_ip(embedded):
+            return True
+    return (
+        not ip.is_global
+        or ip.is_private
+        or ip.is_loopback
+        or ip.is_link_local
+        or ip.is_multicast
+        or ip.is_reserved
+        or ip.is_unspecified
+    )
+
+
+def vet_url(url: str, *, resolver: Resolver = default_resolver) -> VettedTarget:
+    if "\\" in url or "#" in url or not url.startswith("https://"):
+        raise SsrfError("url must be https without fragments or backslashes")
+    parts = urlsplit(url)
+    if parts.scheme != "https" or "@" in parts.netloc or not parts.hostname:
+        raise SsrfError("url must be https://host/path without userinfo")
+    hostname = parts.hostname.lower()
+    try:
+        ipaddress.ip_address(hostname)
+    except ValueError:
+        pass
+    else:
+        raise SsrfError("ip literals are not allowed; enrol a DNS name")
+    labels = hostname.rstrip(".").split(".")
+    if len(labels) < 2 or not all(_LABEL.fullmatch(lbl) for lbl in labels):
+        raise SsrfError("hostname must be a fully qualified DNS name")
+    try:
+        explicit = parts.port
+        port = 443 if explicit is None else explicit  # not `or`: an explicit :0 must be rejected
+    except ValueError:
+        raise SsrfError("invalid port") from None
+    if not 0 < port < 65536:
+        raise SsrfError("invalid port")
+
+    try:
+        answers = resolver(hostname, port)
+    except Exception:  # noqa: BLE001 - any resolution failure is a refusal
+        raise SsrfError("hostname did not resolve") from None
+    if not answers:
+        raise SsrfError("hostname did not resolve")
+    try:
+        ips = [ipaddress.ip_address(a) for a in answers]
+    except ValueError:
+        raise SsrfError("resolver returned an invalid address") from None
+    if any(is_forbidden_ip(ip) for ip in ips):
+        # One internal answer poisons the set; never say which (log-safe, no recon help).
+        raise SsrfError("hostname resolves to a non-public address")
+    path = (parts.path or "/") + (f"?{parts.query}" if parts.query else "")
+    return VettedTarget(hostname=hostname, port=port, path=path, ip=str(sorted(ips, key=str)[0]))
+
+
+class PinnedClient:
+    def __init__(
+        self,
+        *,
+        resolver: Resolver = default_resolver,
+        ca_bundle_path: str | None = None,
+        timeout_s: float = 10.0,
+        max_response_bytes: int = DEFAULT_MAX_RESPONSE_BYTES,
+        transport: httpx.BaseTransport | None = None,
+    ) -> None:
+        self._resolver = resolver
+        self._max = max_response_bytes
+        self._client = httpx.Client(
+            verify=tls_context(ca_bundle_path),
+            timeout=timeout_s,
+            follow_redirects=False,
+            transport=transport,
+        )
+
+    def post_json(
+        self, url: str, payload: Mapping[str, Any], *, headers: Mapping[str, str]
+    ) -> tuple[int, dict[str, Any] | None]:
+        """Vet, pin, POST. Returns (status, JSON object or None if unacceptable).
+
+        Raises ``SsrfError`` (vetting) or ``httpx.HTTPError`` (transport)."""
+        t = vet_url(url, resolver=self._resolver)  # every call: defeats DNS rebinding
+        host = f"[{t.ip}]" if ":" in t.ip else t.ip
+        host_header = t.hostname if t.port == 443 else f"{t.hostname}:{t.port}"
+        request = self._client.build_request(
+            "POST",
+            f"https://{host}:{t.port}{t.path}",
+            content=json.dumps(dict(payload)).encode(),
+            headers={
+                **dict(headers),
+                "Host": host_header,
+                "Content-Type": "application/json",
+                "Accept": "application/json",
+            },
+            # TLS SNI and certificate verification use the hostname, not the pinned IP.
+            extensions={"sni_hostname": t.hostname},
+        )
+        response = self._client.send(request, stream=True)
+        try:
+            return response.status_code, self._read(response)
+        finally:
+            response.close()
+
+    def _read(self, resp: httpx.Response) -> dict[str, Any] | None:
+        if resp.headers.get("content-type", "").split(";")[0].strip().lower() != "application/json":
+            return None
+        buf = bytearray()
+        for chunk in resp.iter_bytes():
+            buf += chunk
+            if len(buf) > self._max:
+                return None
+        try:
+            parsed = json.loads(buf)
+        except (ValueError, RecursionError):
+            return None
+        return parsed if isinstance(parsed, dict) else None

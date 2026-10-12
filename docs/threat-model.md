@@ -96,10 +96,10 @@ Status values: `planned` · `in-progress` · `done (test: <id>)` · `accepted (A
 | TM-TOOL-01 | E | **Confused deputy**: a prompt-injected agent invokes a tool the user may not use, or uses the agent's broader privilege | Tool call authorized against (agent record ∩ user entitlement) by Cedar policy at the gateway, not inside the agent | 3–4 | done for token flow (bind_actor confused-deputy guard + tool-AS actor check: `tests/exchange/test_egress.py`, `tests/interceptor/test_egress_handler.py`); Cedar policy in Phase 4 |
 | TM-TOOL-02 | S | **Token passthrough**: user's token forwarded to a third-party MCP server | Prohibited (MCP authorization spec). Per-target RFC 8693 exchange with `act`, or a per-target credential when `delegation = none` (ADR-0008). | 3 | done (delegated per-target tokens, no passthrough: `test_agent_and_user_tokens_never_forwarded`); `delegation = none` path in 3b |
 | TM-TOOL-07 | E | Agent-to-agent delegation chains amplify privilege | Delegated tool tokens carry `act` with max depth 1. Nested `act` is denied unless both agent records allow delegation (ADR-0008). | 3–4 | done (depth 1 enforced at interceptor and tool AS: `test_delegation_chain_refused`, `test_subject_with_act_refused`) |
-| TM-TOOL-03 | T | **Tool poisoning**: MCP server changes tool descriptions after approval (rug pull) | Discovery snapshot hashed at approval. A hash change puts the server in `pending_review` and its tools are hidden until re-approved. | 3 | planned |
+| TM-TOOL-03 | T | **Tool poisoning**: MCP server changes tool descriptions after approval (rug pull) | Discovery snapshot hashed at approval. A hash change puts the server in `pending_review` and its tools are hidden until re-approved. | 3 | done (digest pinning + drift quarantine + per-call recheck: `tests/mcp_gateway/test_snapshot.py`, `test_admin.py::TestLifecycle`, `test_proxy.py::TestDenies`); residual RR-4 |
 | TM-TOOL-04 | I | Tool result carries injected instructions or exfiltration payloads | RESPONSE-side content scan on tool results. Size caps. Egress allowlist for URLs the agent can reach. | 3 | in-progress (response scanning + local rules done; production scanner adapter in Phase 3) |
-| TM-TOOL-05 | I | MCP server credentials leak via the registry | Credentials only in Secrets Manager. DynamoDB stores the ARN. The API never returns secrets. | 3 | planned |
-| TM-TOOL-06 | S | SSRF via enrolled server URL (e.g. `169.254.169.254`, internal hosts) | URL allowlist: HTTPS only, DNS resolved and checked against private/link-local ranges at enroll **and** call time (DNS rebinding) | 3 | planned |
+| TM-TOOL-05 | I | MCP server credentials leak via the registry | Credentials only in Secrets Manager. DynamoDB stores the ARN. The API never returns secrets. | 3 | done for the core (store holds Secrets Manager ARN only; values never in records, logs or agent responses: `test_admin.py`, `test_proxy.py`); Secrets Manager adapter in 3b HTTP step |
+| TM-TOOL-06 | S | SSRF via enrolled server URL (e.g. `169.254.169.254`, internal hosts) | URL allowlist: HTTPS only, DNS resolved and checked against private/link-local ranges at enroll **and** call time (DNS rebinding) | 3 | done (vet + pin IP per call, IPv4-mapped/NAT64/6to4 decoding, no redirects: `tests/mcp_gateway/test_ssrf.py`) |
 
 ### TB-9: Inference egress
 
@@ -139,6 +139,7 @@ Status values: `planned` · `in-progress` · `done (test: <id>)` · `accepted (A
 |---|---|---|---|
 | RR-1 | Up to 300 s of continued access after user revocation (T2 cache) | IdP load and latency versus revocation lag. Bounded and documented. | ADR-0003 |
 | RR-2 | Scanner outage blocks agents whose profile is fail-closed | Security over availability by default. Per-profile fail-open opt-in is audited. | ADR-0004 |
+| RR-4 | An approved MCP server changes *behaviour* without changing its tool descriptions or schemas, which digest pinning cannot see | Pinning catches every model-visible change. Behavioural changes are bounded by per-call tool-result scanning (TM-TOOL-04), delegated tokens scoped to user ∩ agent ∩ tool, and audit. | ADR-0017 |
 | RR-3 | Local emulation may diverge from real AgentCore, KMS and Okta behaviour | Assumptions A-1..A-3 in `architecture.md` and every known divergence in [`emulator-divergences.md`](emulator-divergences.md) (ED-1..ED-4 so far) are verified against real services before Phase 6 | ADR-0005, ADR-0010 |
 
 ## 6. Review log
@@ -147,6 +148,7 @@ Status values: `planned` · `in-progress` · `done (test: <id>)` · `accepted (A
 |---|---|---|
 | 2026-10-10 | — | Initial draft |
 | 2026-10-11 | Partha Mehta | Accepted ADR-0006/7/8. Added TM-ING-08 and TM-TOOL-07. |
+| 2026-10-12 | Partha Mehta | Phase 3b core (ADR-0017): MCP gateway with SSRF pinning, tool-digest pinning, two-person approval, credential modes. TM-TOOL-03/05/06 done. RR-4 added. |
 | 2026-10-12 | Partha Mehta | Review fixes R1-R5 (event-loop blocking, bounded histories, scanner thread cap, SHA-pinned CI, doc drift). OQ-4 closed. Phase 3a (ADR-0016): delegated tool tokens; TM-TOOL-01/02/07 done for the token flow. |
 | 2026-10-12 | Partha Mehta | Phase 2b: hardened container stack (ADR-0015). Compose e2e 9/9 over TLS. Container logs scanned: no token or key material. Per-service images contain only their own first-party wheels. |
 | 2026-10-11 | Partha Mehta | Phase 2a: runtime T2 authz (OQ-5, ADR-0014), circuit breaker, header-allowlist policy, gateway emulator, in-process e2e. TM-RT-01/02 and TM-EXC-07 done. |

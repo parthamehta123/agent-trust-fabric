@@ -6,6 +6,7 @@ requires-python = "==3.12.*"
 members = [
     "atf-agent-runtime",
     "atf-interceptor",
+    "atf-mcp-gateway",
     "devstack",
     "gateway-emulator",
     "mock-idp",
@@ -18,6 +19,7 @@ members = [
 dev = [
     { name = "atf-agent-runtime", editable = "services/agent_runtime" },
     { name = "atf-interceptor", editable = "services/interceptor" },
+    { name = "atf-mcp-gateway", editable = "services/mcp_gateway" },
     { name = "boto3-stubs", extras = ["kms"], specifier = ">=1.35" },
     { name = "cyclonedx-bom", specifier = ">=4.5" },
     { name = "devstack", editable = "packages/devstack" },
@@ -156,6 +158,23 @@ dependencies = [
 requires-dist = [
     { name = "trustkit", editable = "packages/trustkit" },
     { name = "trustkit-aws", editable = "packages/trustkit_aws" },
+    { name = "trustkit-http", editable = "packages/trustkit_http" },
+]
+
+[[package]]
+name = "atf-mcp-gateway"
+version = "0.0.0"
+source = { editable = "services/mcp_gateway" }
+dependencies = [
+    { name = "httpx" },
+    { name = "trustkit" },
+    { name = "trustkit-http" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "httpx", specifier = ">=0.27" },
+    { name = "trustkit", editable = "packages/trustkit" },
     { name = "trustkit-http", editable = "packages/trustkit_http" },
 ]
 
