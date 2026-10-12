@@ -97,7 +97,7 @@ Status values: `planned` · `in-progress` · `done (test: <id>)` · `accepted (A
 | TM-TOOL-02 | S | **Token passthrough**: user's token forwarded to a third-party MCP server | Prohibited (MCP authorization spec). Per-target RFC 8693 exchange with `act`, or a per-target credential when `delegation = none` (ADR-0008). | 3 | done (delegated per-target tokens, no passthrough: `test_agent_and_user_tokens_never_forwarded`); `delegation = none` path in 3b |
 | TM-TOOL-07 | E | Agent-to-agent delegation chains amplify privilege | Delegated tool tokens carry `act` with max depth 1. Nested `act` is denied unless both agent records allow delegation (ADR-0008). | 3–4 | done (depth 1 enforced at interceptor and tool AS: `test_delegation_chain_refused`, `test_subject_with_act_refused`) |
 | TM-TOOL-03 | T | **Tool poisoning**: MCP server changes tool descriptions after approval (rug pull) | Discovery snapshot hashed at approval. A hash change puts the server in `pending_review` and its tools are hidden until re-approved. | 3 | done (digest pinning + drift quarantine + per-call recheck: `tests/mcp_gateway/test_snapshot.py`, `test_admin.py::TestLifecycle`, `test_proxy.py::TestDenies`); residual RR-4 |
-| TM-TOOL-04 | I | Tool result carries injected instructions or exfiltration payloads | RESPONSE-side content scan on tool results. Size caps. Egress allowlist for URLs the agent can reach. | 3 | in-progress (response scanning + local rules done; production scanner adapter in Phase 3) |
+| TM-TOOL-04 | I | Tool result carries injected instructions or exfiltration payloads | RESPONSE-side content scan on tool results. Size caps. Egress allowlist for URLs the agent can reach. | 3 | done (response scanning + local rules; production adapter `trustkit_aws.guardrails.BedrockGuardrailScanner`, ADR-0019 §6) |
 | TM-TOOL-05 | I | MCP server credentials leak via the registry | Credentials only in Secrets Manager. DynamoDB stores the ARN. The API never returns secrets. | 3 | done for the core (store holds Secrets Manager ARN only; values never in records, logs or agent responses: `test_admin.py`, `test_proxy.py`); Secrets Manager adapter in 3b HTTP step |
 | TM-TOOL-06 | S | SSRF via enrolled server URL (e.g. `169.254.169.254`, internal hosts) | URL allowlist: HTTPS only, DNS resolved and checked against private/link-local ranges at enroll **and** call time (DNS rebinding) | 3 | done (vet + pin IP per call, IPv4-mapped/NAT64/6to4 decoding, no redirects: `tests/mcp_gateway/test_ssrf.py`) |
 
@@ -105,9 +105,9 @@ Status values: `planned` · `in-progress` · `done (test: <id>)` · `accepted (A
 
 | ID | STRIDE | Threat | Mitigation | Phase | Status |
 |---|---|---|---|---|---|
-| TM-INF-01 | E | Agent uses unapproved or expensive models | LiteLLM per-agent model allowlist from the agent record. The Bedrock IAM policy is limited to the allowlisted model ARNs. | 3 | planned |
-| TM-INF-02 | D | Runaway agent loop burns budget | Per-agent budget and RPM limits in LiteLLM. Alert at thresholds. | 3 | planned |
-| TM-INF-03 | I | Sensitive data sent to the model | Request-side scan / guardrail with PII redaction at the inference gateway | 3 | planned |
+| TM-INF-01 | E | Agent uses unapproved or expensive models | Inference gateway (ADR-0019) enforces a per-agent model allowlist from the inference profile before any provider call, and clamps `max_tokens`. In AWS, the gateway role may invoke only the allowlisted model ARNs. | 3 | done in the gateway (`tests/inference/test_inference.py::TestService::test_model_not_allowed_before_any_call`, `test_max_tokens_defaults_and_clamps`); IAM model-ARN scoping in Phase 6 |
+| TM-INF-02 | D | Runaway agent loop burns budget | Per-agent daily token budget: DynamoDB conditional `ADD` reserve, then settle to actual usage. A provider error releases the reservation. Store unavailable → deny. | 3 | done (`TestInMemoryBudget::test_concurrent_reservations_never_overspend`, `TestDynamoBudget`, `TestService::test_budget_*`, `TestEdgeCases::test_unreachable_store_is_unavailable`); RPM limits and spend alerts in Phase 6 |
+| TM-INF-03 | I | Sensitive data sent to the model | Prompt scanned before any spend; completion scanned before return (BLOCK → 502, REDACT → masked text). Production scanner: Bedrock Guardrails `ApplyGuardrail`; any intervention other than anonymised PII is BLOCK, unknown policy shapes fail closed. | 3 | done (`TestService::test_prompt_injection_blocked_before_spend`, `test_completion_*`, `TestGuardrails`, `TestGuardrailRealisticShapes`); Guardrails verified via Stubber only (ED-10) |
 
 ### TB-10: Knowledge retrieval
 
@@ -148,6 +148,7 @@ Status values: `planned` · `in-progress` · `done (test: <id>)` · `accepted (A
 |---|---|---|
 | 2026-10-10 | — | Initial draft |
 | 2026-10-11 | Partha Mehta | Accepted ADR-0006/7/8. Added TM-ING-08 and TM-TOOL-07. |
+| 2026-10-12 | Partha Mehta | Phase 3c (ADR-0019): inference gateway with the LiteLLM SDK (no hidden egress, tested in a fresh interpreter), workload-token auth, per-agent model allowlist, DynamoDB budget reservations, Bedrock Guardrails scanner. TM-INF-01/02/03 and TM-TOOL-04 done. ED-10 added. |
 | 2026-10-12 | Partha Mehta | Phase 3b complete: MCP gateway in containers (DynamoDB Local, separate admin plane sharing no network with the data plane). Compose e2e 14/14 over TLS incl. two-person approval, delegated-token verification by the tool, SSRF refusal, and rug-pull quarantine. Logs clean. |
 | 2026-10-12 | Partha Mehta | Phase 3b core (ADR-0017): MCP gateway with SSRF pinning, tool-digest pinning, two-person approval, credential modes. TM-TOOL-03/05/06 done. RR-4 added. |
 | 2026-10-12 | Partha Mehta | Review fixes R1-R5 (event-loop blocking, bounded histories, scanner thread cap, SHA-pinned CI, doc drift). OQ-4 closed. Phase 3a (ADR-0016): delegated tool tokens; TM-TOOL-01/02/07 done for the token flow. |

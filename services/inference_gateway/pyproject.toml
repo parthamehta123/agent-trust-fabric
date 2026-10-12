@@ -1,0 +1,26 @@
+[project]
+name = "atf-inference-gateway"
+version = "0.0.0"
+description = "Inference gateway: per-agent model allowlists, atomic budgets, guardrail scanning; embeds the LiteLLM SDK (ADR-0019)."
+requires-python = ">=3.12,<3.13"
+dependencies = [
+    "boto3>=1.35",
+    "fastapi>=0.115",
+    "litellm==1.105.0",
+    "trustkit",
+    "trustkit-aws",
+    "trustkit-http",
+    "uvicorn>=0.30",
+]
+
+[build-system]
+requires = ["hatchling>=1.25"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/atf_inference_gateway"]
+
+[tool.uv.sources]
+trustkit = { workspace = true }
+trustkit-http = { workspace = true }
+trustkit-aws = { workspace = true }
