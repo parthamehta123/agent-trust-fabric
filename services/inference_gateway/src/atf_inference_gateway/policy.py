@@ -12,7 +12,7 @@ from trustkit.profiles import HttpsUrl, ProfileConfigError, ScannerFailureMode
 MAX_OUTPUT_TOKENS_CEILING: Final = 32_768
 
 ModelId = Annotated[str, StringConstraints(pattern=r"^[A-Za-z0-9._:/-]{1,200}$")]
-"""A LiteLLM model id (e.g. ``bedrock/anthropic.claude-...``); no wildcards or spaces."""
+"""A logical model name or LiteLLM model id (``bedrock/anthropic.claude-...``); no wildcards."""
 
 
 class _Strict(BaseModel):

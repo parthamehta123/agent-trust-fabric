@@ -65,6 +65,9 @@ WORKLOAD_AUDIENCE: Final = "api://tool-gateway"
 ADMIN_AS: Final = "admin"
 ADMIN_AUDIENCE: Final = "api://mcp-admin"
 MOCK_MCP_HOST: Final = "mock-mcp.tools.internal"
+INFERENCE_AS: Final = "inference"
+INFERENCE_AUDIENCE: Final = "api://inference-gateway"
+LOGICAL_MODEL: Final = "claude-sonnet"
 
 # key file name -> client id
 CLIENT_KEYS: Final = {
@@ -82,6 +85,8 @@ DEFAULT_SERVICES: Final = (
     Service("mcp-gateway", ("mcp-gateway", "localhost")),
     Service("mcp-admin", ("mcp-admin", "localhost")),
     Service("mock-mcp", (MOCK_MCP_HOST,)),
+    Service("inference-gateway", ("inference-gateway", "localhost")),
+    Service("mock-llm", ("mock-llm",)),
 )
 
 
@@ -176,6 +181,8 @@ def bootstrap(
     _write(topology_path, _json(_topology(base, public_jwks)), 0o644)
     _write(profiles_path, _json(_profiles(base)), 0o644)
     _write(out_dir / "mcp-egress.json", _json(_mcp_egress(base)), 0o644)
+    _write(out_dir / "inference-profile.json", _json(_inference_profile(base)), 0o644)
+    _write(out_dir / "model-routes.json", _json(_model_routes()), 0o644)
 
     return BootstrapResult(
         out_dir=out_dir,
@@ -248,6 +255,11 @@ def _topology(base: str, jwks: Mapping[str, Mapping[str, str]]) -> dict[str, Any
                 "clients": [AGENT_CLIENT_ID],
             },
             {
+                "as_id": INFERENCE_AS,
+                "resource_audience": INFERENCE_AUDIENCE,
+                "clients": [AGENT_CLIENT_ID],
+            },
+            {
                 "as_id": TOOL_AS,
                 "resource_audience": TOOL_AUDIENCE,
                 "clients": [TOOL_GATEWAY_CLIENT_ID],
@@ -260,7 +272,13 @@ def _topology(base: str, jwks: Mapping[str, Mapping[str, str]]) -> dict[str, Any
         ],
         "clients": [
             client(FRONTEND_CLIENT_ID, {f"{base}/oauth2/{AGENT}": ["agent.invoke"]}),
-            client(AGENT_CLIENT_ID, {f"{base}/oauth2/{WORKLOAD_AS}": ["tools.invoke"]}),
+            client(
+                AGENT_CLIENT_ID,
+                {
+                    f"{base}/oauth2/{WORKLOAD_AS}": ["tools.invoke"],
+                    f"{base}/oauth2/{INFERENCE_AS}": ["inference.invoke"],
+                },
+            ),
             client(TOOL_GATEWAY_CLIENT_ID, {f"{base}/oauth2/{TOOL_AS}": ["tickets.read"]}),
             *(
                 client(cid, {f"{base}/oauth2/{ADMIN_AS}": ["mcp.admin"]})
@@ -300,6 +318,35 @@ def _mcp_egress(base: str) -> dict[str, Any]:
                 "allowed_scopes": ["tickets.read"],
             }
         },
+    }
+
+
+def _inference_profile(base: str) -> dict[str, Any]:
+    """Inference gateway profile (ADR-0019): its own audience, so tool-gateway tokens don't work."""
+    return {
+        "inbound": {
+            "issuer": f"{base}/oauth2/{INFERENCE_AS}",
+            "audiences": [INFERENCE_AUDIENCE],
+            "jwks_uri": f"{base}/oauth2/{INFERENCE_AS}/v1/keys",
+        },
+        "agents": {
+            AGENT_CLIENT_ID: {
+                "models": [LOGICAL_MODEL],
+                "daily_token_budget": 20_000,
+                "max_output_tokens": 256,
+            }
+        },
+        "scanner_failure_mode": "closed",
+    }
+
+
+def _model_routes() -> dict[str, Any]:
+    """Local only: the logical model goes to mock-llm on the internal `llm` network (ADR-0020)."""
+    return {
+        LOGICAL_MODEL: {
+            "provider_model": "openai/mock-sonnet",
+            "api_base": "https://mock-llm:8443/v1",
+        }
     }
 
 

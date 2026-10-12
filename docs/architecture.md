@@ -130,7 +130,7 @@ There are three egress paths. They are separate because their credential models 
 | Path | Agent → gateway auth | Gateway → target auth | Notes |
 |---|---|---|---|
 | Tools (MCP) | Workload identity token (agent's own client credentials) **or** T2-derived delegated token | Per-target exchange or a per-target API key from Secrets Manager. **No passthrough.** | See OQ-3 |
-| Inference | IAM SigV4 (the agent's execution role) | Gateway role → LiteLLM → Bedrock | LiteLLM enforces the per-agent model allowlist and budget |
+| Inference | Workload token from the `inference` AS (`aud = api://inference-gateway`); IAM SigV4 can be layered on in Phase 6 | Gateway role → LiteLLM SDK → Bedrock | The gateway enforces the per-agent model allowlist, budget and scanning (ADR-0019, ADR-0020) |
 | Knowledge | IAM SigV4 | Gateway role → KB connector, with a retrieval filter from the agent record and the user's entitlements | Phase 5 |
 
 The non-AgentCore path (`mcp_gateway`) provides the same guarantees for agents that run elsewhere:
@@ -184,7 +184,8 @@ See [ADR-0005](adr/0005-local-first-emulation.md).
 | Okta Org AS + custom AS | `mocks/idp`: spec-conformant token exchange + JWT-bearer, RS256, JWKS |
 | AgentCore Gateway + interceptor hook | `gateway-emulator` (documented behaviour, ADR-0014) calling the interceptor as a real Lambda image under RIE (ADR-0015) |
 | SSM / Secrets Manager / DynamoDB / S3 / SQS | `moto` in unit and contract tests (LocalStack only if a later phase needs a service moto lacks) |
-| Bedrock models | LiteLLM `mock_response` / a fake provider |
+| Bedrock models | `mock-llm`, an OpenAI-compatible test server reached through LiteLLM's real HTTP path (ADR-0020) |
+| Bedrock Guardrails | botocore `Stubber` in unit tests (ED-10); `LocalRulesScanner` in the local stack |
 | Content scanner | Rule-based local scanner implementing the same interface |
 
 ## Open questions

@@ -31,12 +31,15 @@ def litellm_complete(
     max_tokens: int,
     temperature: float | None,
     *,
+    api_base: str | None = None,
     mock_response: str | None = None,
 ) -> Completion:
     """Provider call via LiteLLM. ``mock_response`` is for tests/local stack only."""
     kwargs: dict[str, Any] = {"model": model, "messages": list(messages), "max_tokens": max_tokens}
     if temperature is not None:
         kwargs["temperature"] = temperature
+    if api_base is not None:
+        kwargs["api_base"] = api_base
     if mock_response is not None:
         kwargs["mock_response"] = mock_response
     response = litellm.completion(**kwargs)
@@ -47,3 +50,8 @@ def litellm_complete(
         prompt_tokens=int(getattr(usage, "prompt_tokens", 0) or 0),
         completion_tokens=int(getattr(usage, "completion_tokens", 0) or 0),
     )
+
+
+def configure_tls(ca_bundle_path: str) -> None:
+    """Provider calls trust exactly this CA bundle (local stack: the ephemeral CA)."""
+    litellm.ssl_verify = ca_bundle_path

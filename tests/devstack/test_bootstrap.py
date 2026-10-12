@@ -141,3 +141,30 @@ class TestPhase3Material:
         leaf = cert(result.service_certs["mock-mcp"][0])
         sans = leaf.extensions.get_extension_for_class(x509.SubjectAlternativeName).value
         assert sans.get_values_for_type(x509.DNSName) == ["mock-mcp.tools.internal"]
+
+
+class TestInferenceMaterial:
+    def test_inference_profile_and_routes_load(self, result: BootstrapResult) -> None:
+        from atf_inference_gateway.policy import load_inference_profile
+        from atf_inference_gateway.routes import check_coverage, load_routes
+
+        profile = load_inference_profile((result.out_dir / "inference-profile.json").read_bytes())
+        routes = load_routes(
+            (result.out_dir / "model-routes.json").read_bytes(), env={"ATF_ENV": "local"}
+        )
+        check_coverage(profile, routes)
+        assert profile.inbound.audiences == frozenset({"api://inference-gateway"})
+        assert "0oa-agent-alpha" in profile.agents
+
+    def test_inference_as_is_separate_from_workload_as(self, result: BootstrapResult) -> None:
+        topo = json.loads(result.topology.read_text())
+        auds = {s["as_id"]: s["resource_audience"] for s in topo["authorization_servers"]}
+        assert auds["inference"] == "api://inference-gateway"
+        assert auds["inference"] != auds["workload"]
+        idp = build_idp_from_topology(topo, base_url=BASE)
+        assert idp.issuer("inference") == f"{BASE}/oauth2/inference"
+
+    def test_mock_llm_cert_is_service_name_only(self, result: BootstrapResult) -> None:
+        leaf = cert(result.service_certs["mock-llm"][0])
+        sans = leaf.extensions.get_extension_for_class(x509.SubjectAlternativeName).value
+        assert sans.get_values_for_type(x509.DNSName) == ["mock-llm"]

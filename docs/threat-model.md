@@ -148,6 +148,7 @@ Status values: `planned` · `in-progress` · `done (test: <id>)` · `accepted (A
 |---|---|---|
 | 2026-10-10 | — | Initial draft |
 | 2026-10-11 | Partha Mehta | Accepted ADR-0006/7/8. Added TM-ING-08 and TM-TOOL-07. |
+| 2026-10-12 | Partha Mehta | Phase 3 complete (ADR-0020): the inference gateway runs in compose with its own AS audience, local-only `api_base` model routes, and its own DynamoDB network. Compose e2e 24/24 covers audience isolation, model allowlist, prompt and completion blocking (the model is never called for a blocked prompt), budget settlement in DynamoDB, and network isolation with positive controls. Pinned subnets moved out of Docker's default pools. ED-11 added. |
 | 2026-10-12 | Partha Mehta | Phase 3c (ADR-0019): inference gateway with the LiteLLM SDK (no hidden egress, tested in a fresh interpreter), workload-token auth, per-agent model allowlist, DynamoDB budget reservations, Bedrock Guardrails scanner. TM-INF-01/02/03 and TM-TOOL-04 done. ED-10 added. |
 | 2026-10-12 | Partha Mehta | Phase 3b complete: MCP gateway in containers (DynamoDB Local, separate admin plane sharing no network with the data plane). Compose e2e 14/14 over TLS incl. two-person approval, delegated-token verification by the tool, SSRF refusal, and rug-pull quarantine. Logs clean. |
 | 2026-10-12 | Partha Mehta | Phase 3b core (ADR-0017): MCP gateway with SSRF pinning, tool-digest pinning, two-person approval, credential modes. TM-TOOL-03/05/06 done. RR-4 added. |

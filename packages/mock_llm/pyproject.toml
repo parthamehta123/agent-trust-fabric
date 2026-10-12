@@ -1,0 +1,16 @@
+[project]
+name = "mock-llm"
+version = "0.0.0"
+description = "TEST INFRASTRUCTURE ONLY. Minimal OpenAI-compatible chat completions server for the local inference-gateway stack (ADR-0020). Never deployed."
+requires-python = ">=3.12,<3.13"
+dependencies = [
+    "fastapi>=0.115",
+    "uvicorn>=0.30",
+]
+
+[build-system]
+requires = ["hatchling>=1.25"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/mock_llm"]

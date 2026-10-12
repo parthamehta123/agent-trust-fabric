@@ -117,7 +117,7 @@ services:
     # Deliberate, scoped relaxation (ED-9): DynamoDB Local extracts its native SQLite library
     # to /tmp and must map it executable, so this test-only container's /tmp allows exec.
     tmpfs: ["/tmp:size=64m,mode=1777,exec"]
-    networks: [ddb-data, ddb-admin]
+    networks: [ddb-data, ddb-admin, ddb-inference]
     healthcheck:
       test: ["CMD-SHELL", "bash -c '</dev/tcp/127.0.0.1/8000' || exit 1"]
       interval: 3s
@@ -156,7 +156,7 @@ services:
       ATF_DDB_TABLE: mcp-servers
       ATF_EGRESS_PROFILE_PATH: /run/config/mcp-egress.json
       ATF_LOCAL_KEYS_DIR: /run/keys
-      ATF_SSRF_ALLOW_CIDRS: 172.30.0.0/16
+      ATF_SSRF_ALLOW_CIDRS: 10.230.0.0/16
       AWS_REGION: us-east-1
       AWS_ENDPOINT_URL_DYNAMODB: http://dynamodb-local:8000
       # DynamoDB Local checks the key *format* (alphanumeric) but not the values (ED-9).
@@ -181,7 +181,7 @@ services:
     command: ["atf_mcp_gateway.app:admin_app_from_env"]
     environment:
       <<: *mcp-env
-      ATF_SSRF_ALLOW_CIDRS: 172.31.0.0/16
+      ATF_SSRF_ALLOW_CIDRS: 10.231.0.0/16
       ATF_ADMIN_ISSUER: https://mock-idp:8443/oauth2/admin
       ATF_ADMIN_AUDIENCE: api://mcp-admin
       ATF_ADMIN_JWKS_URI: https://mock-idp:8443/oauth2/admin/v1/keys
@@ -197,6 +197,56 @@ services:
       mock-mcp: { condition: service_healthy }
     healthcheck: *tls-healthcheck
 
+  # ---------------------------------------------------------------- Inference gateway (ADR-0019/0020)
+  # Own audience, own DynamoDB network (no route to the MCP registry table), and the only
+  # service on the internal `llm` network that reaches the model.
+
+  mock-llm:
+    <<: *hardening
+    build: { context: ., dockerfile: deploy/local/service.Dockerfile, args: { SERVICE: mock-llm } }
+    command: ["mock_llm.app:app_from_env"]
+    environment:
+      ATF_ENV: local
+      ATF_MOCK_LLM_KEY: localdummy
+    volumes:
+      - ./.local-ca/ca.pem:/run/certs/ca.pem:ro
+      - ./.local-ca/mock-llm.pem:/run/certs/tls.pem:ro
+      - ./.local-ca/mock-llm.key:/run/certs/tls.key:ro
+    networks: [llm]
+    healthcheck:
+      <<: *tls-healthcheck
+      test: ["CMD", "python", "-c", "import ssl,urllib.request as u; u.urlopen('https://mock-llm:8443/ping', context=ssl.create_default_context(cafile='/run/certs/ca.pem'), timeout=2)"]
+
+  inference-gateway:
+    <<: *hardening
+    build: { context: ., dockerfile: deploy/local/service.Dockerfile, args: { SERVICE: atf-inference-gateway } }
+    command: ["atf_inference_gateway.app:app_from_env"]
+    environment:
+      ATF_ENV: local
+      ATF_CA_BUNDLE: /run/certs/ca.pem
+      ATF_INFERENCE_PROFILE_PATH: /run/config/inference-profile.json
+      ATF_MODEL_ROUTES_PATH: /run/config/model-routes.json
+      ATF_BUDGET_TABLE: budgets
+      AWS_REGION: us-east-1
+      AWS_ENDPOINT_URL_DYNAMODB: http://dynamodb-local:8000
+      AWS_ACCESS_KEY_ID: localdummy
+      AWS_SECRET_ACCESS_KEY: localdummy
+      # Provider credential for mock-llm only; agents' tokens never reach the provider.
+      OPENAI_API_KEY: localdummy
+    volumes:
+      - ./.local-ca/ca.pem:/run/certs/ca.pem:ro
+      - ./.local-ca/inference-gateway.pem:/run/certs/tls.pem:ro
+      - ./.local-ca/inference-gateway.key:/run/certs/tls.key:ro
+      - ./.local-ca/inference-profile.json:/run/config/inference-profile.json:ro
+      - ./.local-ca/model-routes.json:/run/config/model-routes.json:ro
+    ports: ["127.0.0.1:8445:8443"]
+    networks: [inference-edge, ddb-inference, llm, idp]
+    depends_on:
+      dynamodb-local: { condition: service_healthy }
+      mock-idp: { condition: service_healthy }
+      mock-llm: { condition: service_healthy }
+    healthcheck: *tls-healthcheck
+
 networks:
   edge: {}
   core: { internal: true }
@@ -206,6 +256,11 @@ networks:
   admin-edge: {}
   ddb-data: { internal: true }
   ddb-admin: { internal: true }
-  tools-data: { internal: true, ipam: { config: [{ subnet: 172.30.0.0/16 }] } }
-  tools-admin: { internal: true, ipam: { config: [{ subnet: 172.31.0.0/16 }] } }
+  # Pinned subnets sit outside Docker's default address pools (172.17-31/16, 192.168/16) so an
+  # auto-assigned network can never collide with them, whatever the creation order.
+  tools-data: { internal: true, ipam: { config: [{ subnet: 10.230.0.0/16 }] } }
+  tools-admin: { internal: true, ipam: { config: [{ subnet: 10.231.0.0/16 }] } }
   idp-admin: { internal: true }
+  inference-edge: {}
+  ddb-inference: { internal: true }
+  llm: { internal: true }

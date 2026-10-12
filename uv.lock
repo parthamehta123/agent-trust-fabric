@@ -11,6 +11,7 @@ members = [
     "devstack",
     "gateway-emulator",
     "mock-idp",
+    "mock-llm",
     "mock-mcp",
     "trustkit",
     "trustkit-aws",
@@ -29,6 +30,7 @@ dev = [
     { name = "gateway-emulator", editable = "packages/gateway_emulator" },
     { name = "hypothesis", specifier = ">=6.100" },
     { name = "mock-idp", editable = "packages/mock_idp" },
+    { name = "mock-llm", editable = "packages/mock_llm" },
     { name = "mock-mcp", editable = "packages/mock_mcp" },
     { name = "moto", extras = ["dynamodb", "kms", "secretsmanager"], specifier = ">=5.0" },
     { name = "mypy", specifier = ">=1.11" },
@@ -1229,6 +1231,21 @@ requires-dist = [
     { name = "cryptography", specifier = ">=43" },
     { name = "fastapi", specifier = ">=0.115" },
     { name = "joserfc", specifier = ">=1.0" },
+    { name = "uvicorn", specifier = ">=0.30" },
+]
+
+[[package]]
+name = "mock-llm"
+version = "0.0.0"
+source = { editable = "packages/mock_llm" }
+dependencies = [
+    { name = "fastapi" },
+    { name = "uvicorn" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "fastapi", specifier = ">=0.115" },
     { name = "uvicorn", specifier = ">=0.30" },
 ]
 
