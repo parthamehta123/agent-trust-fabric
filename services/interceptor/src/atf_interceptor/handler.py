@@ -45,6 +45,7 @@ from trustkit.binding import (
     AgentPolicy,
     BindingError,
     BoundIdentity,
+    actor_policies,
     bind,
     bind_actor,
 )
@@ -183,27 +184,7 @@ def make_handler(deps: InterceptorDeps) -> Handler:
             ),
         )
         if key not in actor_cache:
-            workload_v = TokenValidator(
-                ValidationPolicy(issuer=ei.issuer, audiences=ei.audiences, expected_typ="at+jwt"),
-                deps.jwks(ei.jwks_uri),
-                now=deps.now,
-            )
-            policies = {
-                cid: AgentPolicy(
-                    TokenValidator(
-                        ValidationPolicy(
-                            issuer=a.t2_issuer,
-                            audiences=frozenset({a.t2_audience}),
-                            expected_typ="at+jwt",
-                        ),
-                        deps.jwks(a.t2_jwks_uri),
-                        now=deps.now,
-                    ),
-                    a.allowed_scopes,
-                )
-                for cid, a in agents.items()
-            }
-            actor_cache[key] = (workload_v, policies)
+            actor_cache[key] = actor_policies(profile, deps.jwks, now=deps.now)
         return actor_cache[key]
 
     def handler(event: Mapping[str, Any], context: Any) -> dict[str, Any]:

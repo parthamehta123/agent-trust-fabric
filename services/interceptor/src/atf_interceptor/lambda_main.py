@@ -19,12 +19,11 @@ from __future__ import annotations
 import contextlib
 import os
 import pathlib
-import re
 import sys
 import threading
 import time
 from collections.abc import Callable, Mapping
-from typing import Any, Final
+from typing import Any
 
 from atf_interceptor.events import Shape, deny, request_id_from_context
 from atf_interceptor.handler import Handler, InterceptorDeps, make_handler
@@ -34,54 +33,14 @@ from trustkit.exchange import IdJagExchanger
 from trustkit.jwt import JwksKeyResolver, KeyResolver
 from trustkit.profiles import load_profiles
 from trustkit.scanning import LocalRulesScanner
-from trustkit.signing import InMemoryEs256Signer, KeySigner, SigningError
+from trustkit.signing import KeySigner
+from trustkit_aws.signers import make_signer_factory
 from trustkit_http.endpoint import HttpxTokenEndpoint
 
-_LOCAL_NAME: Final = re.compile(r"^[a-z0-9-]{1,64}$")
-_KMS_ARN: Final = re.compile(r"^arn:aws:kms:([a-z0-9-]+):\d{12}:key/[0-9a-f-]{36}$")
+__all__ = ["build_handler", "handler", "make_signer_factory"]
+
 
 SignerFactory = Callable[[str], KeySigner]
-
-
-def make_signer_factory(env: Mapping[str, str]) -> SignerFactory:
-    """``arn:aws:kms:...`` -> KMS signer. ``local:<name>`` -> in-memory signer (local only).
-
-    Signers are memoised per reference. Unknown or disallowed references raise ``SigningError``.
-    """
-    cache: dict[str, KeySigner] = {}
-    lock = threading.Lock()
-    local_allowed = env.get("ATF_ENV") == "local"
-    keys_dir = env.get("ATF_LOCAL_KEYS_DIR")
-
-    def build(ref: str) -> KeySigner:
-        if (m := _KMS_ARN.fullmatch(ref)) is not None:
-            import boto3  # lazy: keeps cold start lean when only local keys are used
-
-            from trustkit_aws.kms import KmsEs256Signer
-
-            return KmsEs256Signer(boto3.client("kms", region_name=m.group(1)), ref)
-        if ref.startswith("local:"):
-            if not local_allowed:
-                raise SigningError("local signing keys are disabled outside ATF_ENV=local")
-            name = ref.removeprefix("local:")
-            if not _LOCAL_NAME.fullmatch(name) or not keys_dir:
-                raise SigningError("invalid local key reference")
-            try:
-                pem = (pathlib.Path(keys_dir) / f"{name}.pem").read_bytes()
-            except (OSError, ValueError):
-                raise SigningError("local signing key unavailable") from None
-            signer = InMemoryEs256Signer(pem)
-            _ = signer.key_id  # load + validate now: fail at first use, not mid-request
-            return signer
-        raise SigningError("unsupported key reference")
-
-    def factory(ref: str) -> KeySigner:
-        with lock:
-            if ref not in cache:
-                cache[ref] = build(ref)
-            return cache[ref]
-
-    return factory
 
 
 def _deny_all(sink: AuditSink) -> Handler:

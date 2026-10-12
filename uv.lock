@@ -10,6 +10,7 @@ members = [
     "devstack",
     "gateway-emulator",
     "mock-idp",
+    "mock-mcp",
     "trustkit",
     "trustkit-aws",
     "trustkit-http",
@@ -26,6 +27,7 @@ dev = [
     { name = "gateway-emulator", editable = "packages/gateway_emulator" },
     { name = "hypothesis", specifier = ">=6.100" },
     { name = "mock-idp", editable = "packages/mock_idp" },
+    { name = "mock-mcp", editable = "packages/mock_mcp" },
     { name = "moto", extras = ["dynamodb", "kms", "secretsmanager"], specifier = ">=5.0" },
     { name = "mypy", specifier = ">=1.11" },
     { name = "pip-audit", specifier = ">=2.7" },
@@ -170,6 +172,7 @@ dependencies = [
     { name = "fastapi" },
     { name = "httpx" },
     { name = "trustkit" },
+    { name = "trustkit-aws" },
     { name = "trustkit-http" },
     { name = "uvicorn" },
 ]
@@ -180,6 +183,7 @@ requires-dist = [
     { name = "fastapi", specifier = ">=0.115" },
     { name = "httpx", specifier = ">=0.27" },
     { name = "trustkit", editable = "packages/trustkit" },
+    { name = "trustkit-aws", editable = "packages/trustkit_aws" },
     { name = "trustkit-http", editable = "packages/trustkit_http" },
     { name = "uvicorn", specifier = ">=0.30" },
 ]
@@ -916,6 +920,25 @@ dependencies = [
 requires-dist = [
     { name = "cryptography", specifier = ">=43" },
     { name = "fastapi", specifier = ">=0.115" },
+    { name = "joserfc", specifier = ">=1.0" },
+    { name = "uvicorn", specifier = ">=0.30" },
+]
+
+[[package]]
+name = "mock-mcp"
+version = "0.0.0"
+source = { editable = "packages/mock_mcp" }
+dependencies = [
+    { name = "fastapi" },
+    { name = "httpx" },
+    { name = "joserfc" },
+    { name = "uvicorn" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "fastapi", specifier = ">=0.115" },
+    { name = "httpx", specifier = ">=0.27" },
     { name = "joserfc", specifier = ">=1.0" },
     { name = "uvicorn", specifier = ">=0.30" },
 ]

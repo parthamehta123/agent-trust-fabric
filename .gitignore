@@ -44,3 +44,8 @@ sbom.json
 
 # Ephemeral local CA, service certs, client keys, generated configs (ADR-0015)
 .local-ca/
+
+# Auth0 credentials
+.auth0-mcp-state.json
+
+.auth0-mcp-writes.log

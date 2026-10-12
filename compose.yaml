@@ -15,6 +15,14 @@ x-hardening: &hardening
   security_opt: ["no-new-privileges:true"]
   restart: "no"
 
+x-hardening-own-user: &hardening-own-user
+  # For third-party images that already run as a non-root user of their own.
+  read_only: true
+  tmpfs: ["/tmp:size=64m,mode=1777"]
+  cap_drop: [ALL]
+  security_opt: ["no-new-privileges:true"]
+  restart: "no"
+
 x-healthcheck: &tls-healthcheck
   test: ["CMD", "python", "-c", "import ssl,urllib.request as u; u.urlopen('https://localhost:8443/ping', context=ssl.create_default_context(cafile='/run/certs/ca.pem'), timeout=2)"]
   interval: 5s
@@ -36,7 +44,7 @@ services:
       - ./.local-ca/mock-idp.key:/run/certs/tls.key:ro
       - ./.local-ca/mock-idp-topology.json:/run/config/mock-idp-topology.json:ro
     ports: ["127.0.0.1:9443:8443"]
-    networks: [edge, idp]
+    networks: [edge, idp, idp-admin]
     healthcheck: *tls-healthcheck
 
   interceptor:
@@ -98,8 +106,106 @@ services:
       interceptor: { condition: service_started }
     healthcheck: *tls-healthcheck
 
+  # ---------------------------------------------------------------- MCP gateway (ADR-0017/0018)
+  # Data plane and admin plane share NO network: each shared dependency is reached over a
+  # plane-specific network, so the admin port is unreachable from anything agent-facing.
+
+  dynamodb-local:
+    <<: *hardening-own-user
+    image: amazon/dynamodb-local@sha256:ff89bd48ff32cd8d9be5fee8873b65b8854dc408f1afe881be6eb00247bc0dab
+    command: ["-jar", "DynamoDBLocal.jar", "-inMemory", "-sharedDb"]
+    # Deliberate, scoped relaxation (ED-9): DynamoDB Local extracts its native SQLite library
+    # to /tmp and must map it executable, so this test-only container's /tmp allows exec.
+    tmpfs: ["/tmp:size=64m,mode=1777,exec"]
+    networks: [ddb-data, ddb-admin]
+    healthcheck:
+      test: ["CMD-SHELL", "bash -c '</dev/tcp/127.0.0.1/8000' || exit 1"]
+      interval: 3s
+      timeout: 2s
+      retries: 20
+
+  mock-mcp:
+    <<: *hardening
+    build: { context: ., dockerfile: deploy/local/service.Dockerfile, args: { SERVICE: mock-mcp } }
+    command: ["mock_mcp.app:app_from_env"]
+    environment:
+      ATF_ENV: local
+      ATF_TOOL_ISSUER: https://mock-idp:8443/oauth2/tool-tickets
+      ATF_TOOL_AUDIENCE: api://tool-tickets
+      ATF_TOOL_JWKS_URI: https://mock-idp:8443/oauth2/tool-tickets/v1/keys
+      ATF_CA_BUNDLE: /run/certs/ca.pem
+    volumes:
+      - ./.local-ca/ca.pem:/run/certs/ca.pem:ro
+      - ./.local-ca/mock-mcp.pem:/run/certs/tls.pem:ro
+      - ./.local-ca/mock-mcp.key:/run/certs/tls.key:ro
+    networks:
+      tools-data: { aliases: [mock-mcp.tools.internal] }
+      tools-admin: { aliases: [mock-mcp.tools.internal] }
+      idp: {}
+    healthcheck:
+      <<: *tls-healthcheck
+      test: ["CMD", "python", "-c", "import ssl,urllib.request as u; u.urlopen('https://mock-mcp.tools.internal:8443/ping', context=ssl.create_default_context(cafile='/run/certs/ca.pem'), timeout=2)"]
+
+  mcp-gateway:
+    <<: *hardening
+    build: { context: ., dockerfile: deploy/local/service.Dockerfile, args: { SERVICE: atf-mcp-gateway } }
+    command: ["atf_mcp_gateway.app:data_app_from_env"]
+    environment: &mcp-env
+      ATF_ENV: local
+      ATF_CA_BUNDLE: /run/certs/ca.pem
+      ATF_DDB_TABLE: mcp-servers
+      ATF_EGRESS_PROFILE_PATH: /run/config/mcp-egress.json
+      ATF_LOCAL_KEYS_DIR: /run/keys
+      ATF_SSRF_ALLOW_CIDRS: 172.30.0.0/16
+      AWS_REGION: us-east-1
+      AWS_ENDPOINT_URL_DYNAMODB: http://dynamodb-local:8000
+      # DynamoDB Local checks the key *format* (alphanumeric) but not the values (ED-9).
+      AWS_ACCESS_KEY_ID: localdummy
+      AWS_SECRET_ACCESS_KEY: localdummy
+    volumes:
+      - ./.local-ca/ca.pem:/run/certs/ca.pem:ro
+      - ./.local-ca/mcp-gateway.pem:/run/certs/tls.pem:ro
+      - ./.local-ca/mcp-gateway.key:/run/certs/tls.key:ro
+      - ./.local-ca/mcp-egress.json:/run/config/mcp-egress.json:ro
+      - ./.local-ca/client-keys/gateway.pem:/run/keys/gateway.pem:ro
+    ports: ["127.0.0.1:8444:8443"]
+    networks: [mcp-edge, ddb-data, tools-data, idp]
+    depends_on:
+      mcp-admin: { condition: service_healthy }
+      mock-mcp: { condition: service_healthy }
+    healthcheck: *tls-healthcheck
+
+  mcp-admin:
+    <<: *hardening
+    build: { context: ., dockerfile: deploy/local/service.Dockerfile, args: { SERVICE: atf-mcp-gateway } }
+    command: ["atf_mcp_gateway.app:admin_app_from_env"]
+    environment:
+      <<: *mcp-env
+      ATF_SSRF_ALLOW_CIDRS: 172.31.0.0/16
+      ATF_ADMIN_ISSUER: https://mock-idp:8443/oauth2/admin
+      ATF_ADMIN_AUDIENCE: api://mcp-admin
+      ATF_ADMIN_JWKS_URI: https://mock-idp:8443/oauth2/admin/v1/keys
+    volumes:
+      - ./.local-ca/ca.pem:/run/certs/ca.pem:ro
+      - ./.local-ca/mcp-admin.pem:/run/certs/tls.pem:ro
+      - ./.local-ca/mcp-admin.key:/run/certs/tls.key:ro
+    ports: ["127.0.0.1:9445:8443"]
+    networks: [admin-edge, ddb-admin, tools-admin, idp-admin]
+    depends_on:
+      dynamodb-local: { condition: service_healthy }
+      mock-idp: { condition: service_healthy }
+      mock-mcp: { condition: service_healthy }
+    healthcheck: *tls-healthcheck
+
 networks:
   edge: {}
   core: { internal: true }
   agent: { internal: true }
   idp: { internal: true }
+  mcp-edge: {}
+  admin-edge: {}
+  ddb-data: { internal: true }
+  ddb-admin: { internal: true }
+  tools-data: { internal: true, ipam: { config: [{ subnet: 172.30.0.0/16 }] } }
+  tools-admin: { internal: true, ipam: { config: [{ subnet: 172.31.0.0/16 }] } }
+  idp-admin: { internal: true }

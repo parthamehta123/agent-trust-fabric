@@ -13,7 +13,7 @@ from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import ec
 from cryptography.x509.oid import ExtendedKeyUsageOID
 
-from devstack.bootstrap import MAX_VALIDITY_DAYS, BootstrapResult, bootstrap
+from devstack.bootstrap import DEFAULT_SERVICES, MAX_VALIDITY_DAYS, BootstrapResult, bootstrap
 from mock_idp.app import build_idp_from_topology
 from trustkit.profiles import load_profiles
 
@@ -75,7 +75,8 @@ class TestLeaves:
             eku = leaf.extensions.get_extension_for_class(x509.ExtendedKeyUsage).value
             assert list(eku) == [ExtendedKeyUsageOID.SERVER_AUTH]
             sans = leaf.extensions.get_extension_for_class(x509.SubjectAlternativeName).value
-            assert name in sans.get_values_for_type(x509.DNSName)
+            expected = next(svc.dns_names for svc in DEFAULT_SERVICES if svc.name == name)
+            assert sans.get_values_for_type(x509.DNSName) == list(expected)
 
     def test_runtime_cert_has_no_localhost(self, result: BootstrapResult) -> None:
         """The runtime is never published to the host (ADR-0015 §2), so no localhost SAN."""
@@ -97,7 +98,7 @@ class TestConfigs:
         assert reg.rejected == {}
         p = reg.lookup("gw-alpha")
         assert p.idp.issuer == BASE
-        assert p.ingress_clients == {"0oa-chat": "local:chat"}
+        assert p.ingress_clients == {"0oa-chat": "local:chat"}  # gateway profiles unchanged
 
     def test_topology_builds_idp_with_matching_client_key(self, result: BootstrapResult) -> None:
         """The mock IdP holds the *public* half of exactly the key the interceptor signs with."""
@@ -106,7 +107,7 @@ class TestConfigs:
         assert idp.issuer("agent-alpha") == f"{BASE}/oauth2/agent-alpha"
         priv = serialization.load_pem_private_key(result.client_keys["chat"].read_bytes(), None)
         assert isinstance(priv, ec.EllipticCurvePrivateKey)
-        (client,) = topo["clients"]
+        client = next(c for c in topo["clients"] if c["client_id"] == "0oa-chat")
         (jwk,) = client["jwks"]["keys"]
         assert "d" not in jwk
         nums = priv.public_key().public_numbers()
@@ -119,3 +120,24 @@ class TestConfigs:
             text = f.read_text()
             assert "PRIVATE KEY" not in text
             assert '"d"' not in text
+
+
+class TestPhase3Material:
+    def test_all_client_keys_and_mcp_egress_profile(self, result: BootstrapResult) -> None:
+        assert set(result.client_keys) == {"chat", "agent", "gateway", "admin-alice", "admin-bob"}
+        doc = json.loads((result.out_dir / "mcp-egress.json").read_text())
+        reg = load_profiles(json.dumps({"version": 1, "profiles": [doc]}))
+        assert reg.rejected == {}
+        assert "0oa-agent-alpha" in (reg.lookup("mcp-gateway").agents or {})
+
+    def test_topology_has_distinct_admin_clients(self, result: BootstrapResult) -> None:
+        topo = json.loads(result.topology.read_text())
+        admin = next(s for s in topo["authorization_servers"] if s["as_id"] == "admin")
+        assert sorted(admin["clients"]) == ["0oa-admin-alice", "0oa-admin-bob"]
+        idp = build_idp_from_topology(topo, base_url=BASE)
+        assert idp.issuer("tool-tickets") == f"{BASE}/oauth2/tool-tickets"
+
+    def test_mock_mcp_cert_is_fqdn_only(self, result: BootstrapResult) -> None:
+        leaf = cert(result.service_certs["mock-mcp"][0])
+        sans = leaf.extensions.get_extension_for_class(x509.SubjectAlternativeName).value
+        assert sans.get_values_for_type(x509.DNSName) == ["mock-mcp.tools.internal"]

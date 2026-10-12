@@ -30,7 +30,12 @@ def build_idp_from_topology(topology: Mapping[str, Any], *, base_url: str) -> Mo
     idp = MockIdp(base_url)
     for srv in topology["authorization_servers"]:
         idp.add_authorization_server(
-            AuthorizationServer(srv["as_id"], srv["resource_audience"], frozenset(srv["clients"]))
+            AuthorizationServer(
+                srv["as_id"],
+                srv["resource_audience"],
+                frozenset(srv["clients"]),
+                srv.get("agent_client_id"),
+            )
         )
     for c in topology["clients"]:
         policy = {aud: frozenset(scopes) for aud, scopes in c.get("exchange_policy", {}).items()}

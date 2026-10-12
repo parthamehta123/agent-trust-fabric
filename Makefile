@@ -2,7 +2,7 @@
 SHELL := /bin/bash
 export ATF_UID := $(shell id -u)
 export ATF_GID := $(shell id -g)
-PACKAGES := mock-idp gateway-emulator atf-agent-runtime atf-interceptor
+PACKAGES := mock-idp gateway-emulator atf-agent-runtime atf-interceptor atf-mcp-gateway mock-mcp
 
 .PHONY: certs wheels up e2e logs-scan down clean
 
@@ -14,6 +14,8 @@ WHEELS_mock-idp := mock_idp
 WHEELS_gateway-emulator := gateway_emulator trustkit trustkit_http
 WHEELS_atf-agent-runtime := atf_agent_runtime trustkit trustkit_http
 WHEELS_atf-interceptor := atf_interceptor trustkit trustkit_http trustkit_aws
+WHEELS_atf-mcp-gateway := atf_mcp_gateway trustkit trustkit_http trustkit_aws
+WHEELS_mock-mcp := mock_mcp
 
 wheels:  ## hash-pinned requirements + per-service first-party wheels -> build/
 	rm -rf build && mkdir -p build/req build/dist

@@ -216,4 +216,153 @@ def create_admin_app(admin: AdminService, admin_validator: TokenValidator) -> Fa
     async def listing(request: Request) -> Response:
         return await run(request, lambda who: admin.list_servers(who))
 
+    @app.get("/ping")
+    def ping() -> dict[str, str]:
+        """Unauthenticated liveness only; reveals nothing about servers or configuration."""
+        return {"status": "ok"}
+
     return app
+
+
+# ----------------------------------------------------------------------------- env factories
+
+
+def _common(env: Mapping[str, str]) -> dict[str, Any]:
+    """Shared wiring. Required variables are read up front: a missing one fails cold start."""
+    import boto3
+
+    from atf_mcp_gateway.ssrf import PinnedClient, parse_local_allowlist
+    from atf_mcp_gateway.store_dynamo import DynamoServerStore
+    from trustkit.jwt import JwksKeyResolver, KeyResolver
+    from trustkit_http.endpoint import HttpxTokenEndpoint
+
+    ca, table, region = (
+        env["ATF_CA_BUNDLE"],
+        env["ATF_DDB_TABLE"],
+        env.get("AWS_REGION", "us-east-1"),
+    )
+    allow = parse_local_allowlist(env)  # raises outside ATF_ENV=local (ADR-0018 §1)
+    http = HttpxTokenEndpoint(ca_bundle_path=ca)
+    resolvers: dict[str, KeyResolver] = {}
+
+    def jwks(uri: str) -> KeyResolver:
+        if uri not in resolvers:
+            resolvers[uri] = JwksKeyResolver(fetch=lambda: http.get_json(uri))
+        return resolvers[uri]
+
+    ddb = boto3.client("dynamodb", region_name=region)
+    return {
+        "env": env,
+        "http": http,
+        "jwks": jwks,
+        "allow": allow,
+        "ddb": ddb,
+        "table": table,
+        "store": DynamoServerStore(ddb, table),
+        "upstream": PinnedClient(ca_bundle_path=ca, allow=allow),
+        "region": region,
+    }
+
+
+def build_data_app(env: Mapping[str, str]) -> FastAPI:
+    import pathlib
+
+    import boto3
+
+    from atf_mcp_gateway.credentials import GatewayCredentials
+    from trustkit.binding import actor_policies, bind_actor
+    from trustkit.breaker import BreakerRegistry
+    from trustkit.exchange import IdJagExchanger
+    from trustkit.profiles import load_profiles
+    from trustkit.scanning import LocalRulesScanner
+    from trustkit_aws.signers import make_signer_factory
+
+    c = _common(env)
+    egress_doc = json.loads(pathlib.Path(env["ATF_EGRESS_PROFILE_PATH"]).read_text())
+    registry = load_profiles(json.dumps({"version": 1, "profiles": [egress_doc]}))
+    if registry.rejected:
+        raise ValueError("egress profile invalid")
+    profile = registry.lookup(egress_doc["gateway_id"])
+    workload_v, agents = actor_policies(profile, c["jwks"])
+    exchanger = IdJagExchanger(
+        http=c["http"], signers=make_signer_factory(env), jwks=c["jwks"], breakers=BreakerRegistry()
+    )
+    credentials = GatewayCredentials(
+        exchanger=exchanger,
+        secrets=boto3.client("secretsmanager", region_name=c["region"]),
+        egress_base=egress_doc,
+    )
+    proxy = McpProxy(
+        store=c["store"],
+        upstream=c["upstream"],
+        credentials=credentials,
+        scanner=LocalRulesScanner(),
+    )
+
+    def binder(headers: Mapping[str, str]) -> ActorBinding:
+        auth, subject = headers.get("authorization", ""), headers.get("x-subject-token")
+        if not auth.startswith("Bearer ") or not subject:
+            raise ValueError("missing credentials")
+        return bind_actor(
+            auth.removeprefix("Bearer "), subject, workload_validator=workload_v, agents=agents
+        )
+
+    return create_data_app(proxy, binder)
+
+
+def build_admin_app(env: Mapping[str, str]) -> FastAPI:
+    from trustkit.jwt import TokenValidator, ValidationPolicy
+    from trustkit.scanning import LocalRulesScanner
+
+    c = _common(env)
+    if env.get("ATF_ENV") == "local":
+        _ensure_local_table(c["ddb"], c["table"])
+    validator = TokenValidator(
+        ValidationPolicy(
+            issuer=env["ATF_ADMIN_ISSUER"],
+            audiences=frozenset({env["ATF_ADMIN_AUDIENCE"]}),
+            expected_typ="at+jwt",
+        ),
+        c["jwks"](env["ATF_ADMIN_JWKS_URI"]),
+    )
+    upstream = c["upstream"]
+
+    def fetch_tools(record: ServerRecord) -> Mapping[str, Any]:
+        status, body = upstream.post_json(
+            record.url, {"jsonrpc": "2.0", "id": 1, "method": "tools/list"}, headers={}
+        )
+        result = body.get("result") if status == 200 and body is not None else None
+        if not isinstance(result, Mapping):
+            raise TypeError("discovery failed")
+        return result
+
+    admin = AdminService(
+        store=c["store"], fetch_tools=fetch_tools, scanner=LocalRulesScanner(), allow=c["allow"]
+    )
+    return create_admin_app(admin, validator)
+
+
+def _ensure_local_table(ddb: Any, table: str) -> None:
+    """Local stack only (DynamoDB Local): create the table if missing. Phase 6 Terraform owns it."""
+    try:
+        ddb.describe_table(TableName=table)
+    except ddb.exceptions.ResourceNotFoundException:
+        ddb.create_table(
+            TableName=table,
+            KeySchema=[{"AttributeName": "server_id", "KeyType": "HASH"}],
+            AttributeDefinitions=[{"AttributeName": "server_id", "AttributeType": "S"}],
+            BillingMode="PAY_PER_REQUEST",
+        )
+        ddb.get_waiter("table_exists").wait(TableName=table)
+
+
+def data_app_from_env() -> FastAPI:
+    import os
+
+    return build_data_app(dict(os.environ))
+
+
+def admin_app_from_env() -> FastAPI:
+    import os
+
+    return build_admin_app(dict(os.environ))

@@ -125,6 +125,20 @@ class TestTransportAndIsolation:
             assert svc.get("read_only") is True, name
             assert svc.get("cap_drop") == ["ALL"], name
             assert "no-new-privileges:true" in svc.get("security_opt", []), name
-            assert svc.get("user") not in (None, "", "0", "root", "0:0"), name
+            user = svc.get("user") or _image_user(svc.get("image"))
+            assert user not in (None, "", "0", "root", "0:0"), name
             for p in svc.get("ports", []):
                 assert p.get("host_ip") == "127.0.0.1", name
+
+
+def _image_user(image: str | None) -> str | None:
+    """For third-party images we don't override `user` on: read the image's own configured user."""
+    if not image:
+        return None
+    out = subprocess.run(  # noqa: S603
+        ["docker", "image", "inspect", "--format", "{{.Config.User}}", image],  # noqa: S607
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    return out.stdout.strip() or None

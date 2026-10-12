@@ -335,6 +335,11 @@ ENROL = {
 
 
 class TestAdminApp:
+    def test_ping_is_unauthenticated_and_bare(self, admin: Any) -> None:
+        client, _ = admin
+        r = client.get("/ping")
+        assert (r.status_code, r.json()) == (200, {"status": "ok"})
+
     def test_full_lifecycle_two_people(self, admin: Any, mint: Mint) -> None:
         client, _ = admin
         alice, bob = admin_hdr(mint, "00u-alice"), admin_hdr(mint, "00u-bob")

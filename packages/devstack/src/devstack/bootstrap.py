@@ -55,11 +55,33 @@ AGENT_AUDIENCE: Final = "api://agent-alpha"
 INGRESS_AS: Final = "ingress"
 INGRESS_AUDIENCE: Final = "api://agent-ingress"
 GATEWAY_ID: Final = "gw-alpha"
+AGENT_CLIENT_ID: Final = "0oa-agent-alpha"
+TOOL_GATEWAY_CLIENT_ID: Final = "0oa-tool-gateway"
+ADMIN_CLIENT_IDS: Final = ("0oa-admin-alice", "0oa-admin-bob")
+TOOL_AS: Final = "tool-tickets"
+TOOL_AUDIENCE: Final = "api://tool-tickets"
+WORKLOAD_AS: Final = "workload"
+WORKLOAD_AUDIENCE: Final = "api://tool-gateway"
+ADMIN_AS: Final = "admin"
+ADMIN_AUDIENCE: Final = "api://mcp-admin"
+MOCK_MCP_HOST: Final = "mock-mcp.tools.internal"
+
+# key file name -> client id
+CLIENT_KEYS: Final = {
+    "chat": "0oa-chat",
+    "agent": AGENT_CLIENT_ID,
+    "gateway": TOOL_GATEWAY_CLIENT_ID,
+    "admin-alice": ADMIN_CLIENT_IDS[0],
+    "admin-bob": ADMIN_CLIENT_IDS[1],
+}
 
 DEFAULT_SERVICES: Final = (
     Service("mock-idp", ("mock-idp", "localhost")),
     Service("gateway", ("gateway", "localhost")),
     Service("agent-runtime", ("agent-runtime",)),
+    Service("mcp-gateway", ("mcp-gateway", "localhost")),
+    Service("mcp-admin", ("mcp-admin", "localhost")),
+    Service("mock-mcp", (MOCK_MCP_HOST,)),
 )
 
 
@@ -139,22 +161,27 @@ def bootstrap(
     keys_dir = out_dir / "client-keys"
     keys_dir.mkdir(mode=0o700, exist_ok=True)
     keys_dir.chmod(0o700)
-    client_key = ec.generate_private_key(ec.SECP256R1())
-    client_key_path = keys_dir / f"{FRONTEND_KEY_NAME}.pem"
-    _write(client_key_path, _pem(client_key), 0o600)
-    public_jwk = es256_public_jwk(client_key.public_key())
-    public_jwk["kid"] = thumbprint(public_jwk)
+    client_key_paths: dict[str, pathlib.Path] = {}
+    public_jwks: dict[str, dict[str, str]] = {}
+    for name, client_id in CLIENT_KEYS.items():
+        key = ec.generate_private_key(ec.SECP256R1())
+        path = keys_dir / f"{name}.pem"
+        _write(path, _pem(key), 0o600)
+        jwk = es256_public_jwk(key.public_key())
+        jwk["kid"] = thumbprint(jwk)
+        client_key_paths[name], public_jwks[client_id] = path, jwk
 
     base = idp_base_url.rstrip("/")
     topology_path, profiles_path = out_dir / "mock-idp-topology.json", out_dir / "profiles.json"
-    _write(topology_path, _json(_topology(base, public_jwk)), 0o644)
+    _write(topology_path, _json(_topology(base, public_jwks)), 0o644)
     _write(profiles_path, _json(_profiles(base)), 0o644)
+    _write(out_dir / "mcp-egress.json", _json(_mcp_egress(base)), 0o644)
 
     return BootstrapResult(
         out_dir=out_dir,
         ca_cert=ca_cert_path,
         service_certs=service_certs,
-        client_keys={FRONTEND_KEY_NAME: client_key_path},
+        client_keys=client_key_paths,
         topology=topology_path,
         profiles=profiles_path,
     )
@@ -194,7 +221,14 @@ def _write(path: pathlib.Path, data: bytes, mode: int) -> None:
     path.chmod(mode)  # O_CREAT ignores mode for pre-existing files
 
 
-def _topology(base: str, client_jwk: Mapping[str, str]) -> dict[str, Any]:
+def _topology(base: str, jwks: Mapping[str, Mapping[str, str]]) -> dict[str, Any]:
+    def client(cid: str, policy: Mapping[str, list[str]]) -> dict[str, Any]:
+        return {
+            "client_id": cid,
+            "jwks": {"keys": [dict(jwks[cid])]},
+            "exchange_policy": dict(policy),
+        }
+
     return {
         "authorization_servers": [
             {
@@ -202,15 +236,70 @@ def _topology(base: str, client_jwk: Mapping[str, str]) -> dict[str, Any]:
                 "resource_audience": INGRESS_AUDIENCE,
                 "clients": [FRONTEND_CLIENT_ID],
             },
-            {"as_id": AGENT, "resource_audience": AGENT_AUDIENCE, "clients": [FRONTEND_CLIENT_ID]},
+            {
+                "as_id": AGENT,
+                "resource_audience": AGENT_AUDIENCE,
+                "clients": [FRONTEND_CLIENT_ID],
+                "agent_client_id": AGENT_CLIENT_ID,
+            },
+            {
+                "as_id": WORKLOAD_AS,
+                "resource_audience": WORKLOAD_AUDIENCE,
+                "clients": [AGENT_CLIENT_ID],
+            },
+            {
+                "as_id": TOOL_AS,
+                "resource_audience": TOOL_AUDIENCE,
+                "clients": [TOOL_GATEWAY_CLIENT_ID],
+            },
+            {
+                "as_id": ADMIN_AS,
+                "resource_audience": ADMIN_AUDIENCE,
+                "clients": list(ADMIN_CLIENT_IDS),
+            },
         ],
         "clients": [
-            {
-                "client_id": FRONTEND_CLIENT_ID,
-                "jwks": {"keys": [dict(client_jwk)]},
-                "exchange_policy": {f"{base}/oauth2/{AGENT}": ["agent.invoke"]},
-            }
+            client(FRONTEND_CLIENT_ID, {f"{base}/oauth2/{AGENT}": ["agent.invoke"]}),
+            client(AGENT_CLIENT_ID, {f"{base}/oauth2/{WORKLOAD_AS}": ["tools.invoke"]}),
+            client(TOOL_GATEWAY_CLIENT_ID, {f"{base}/oauth2/{TOOL_AS}": ["tickets.read"]}),
+            *(
+                client(cid, {f"{base}/oauth2/{ADMIN_AS}": ["mcp.admin"]})
+                for cid in ADMIN_CLIENT_IDS
+            ),
         ],
+    }
+
+
+def _mcp_egress(base: str) -> dict[str, Any]:
+    """Egress profile document for the MCP gateway (ADR-0016/0018); target is per server."""
+    return {
+        "profile_id": "mcp-gateway",
+        "gateway_id": "mcp-gateway",
+        "flow": "egress",
+        "enabled": True,
+        "idp": {
+            "issuer": base,
+            "jwks_uri": f"{base}/oauth2/v1/keys",
+            "token_endpoint": f"{base}/oauth2/v1/token",
+            "resource_issuer": f"{base}/oauth2/{TOOL_AS}",
+            "resource_token_endpoint": f"{base}/oauth2/{TOOL_AS}/v1/token",
+            "resource_jwks_uri": f"{base}/oauth2/{TOOL_AS}/v1/keys",
+        },
+        "target": {"audience": TOOL_AUDIENCE, "scopes": ["tickets.read"]},
+        "client": {"client_id": TOOL_GATEWAY_CLIENT_ID, "signing_key": "local:gateway"},
+        "egress_inbound": {
+            "issuer": f"{base}/oauth2/{WORKLOAD_AS}",
+            "audiences": [WORKLOAD_AUDIENCE],
+            "jwks_uri": f"{base}/oauth2/{WORKLOAD_AS}/v1/keys",
+        },
+        "agents": {
+            AGENT_CLIENT_ID: {
+                "t2_issuer": f"{base}/oauth2/{AGENT}",
+                "t2_audience": AGENT_AUDIENCE,
+                "t2_jwks_uri": f"{base}/oauth2/{AGENT}/v1/keys",
+                "allowed_scopes": ["tickets.read"],
+            }
+        },
     }
 
 

@@ -24,7 +24,7 @@ from atf_mcp_gateway.servers import (
     StoreConflictError,
 )
 from atf_mcp_gateway.snapshot import SnapshotError, take_snapshot
-from atf_mcp_gateway.ssrf import Resolver, SsrfError, default_resolver, vet_url
+from atf_mcp_gateway.ssrf import Network, Resolver, SsrfError, default_resolver, vet_url
 from trustkit.jwt import TokenValidationError, TokenValidator
 from trustkit.profiles import ScannerFailureMode
 from trustkit.scanning import ContentScanner, Direction, Verdict, scan_with_policy
@@ -87,7 +87,9 @@ class AdminService:
         fetch_tools: FetchTools,
         scanner: ContentScanner,
         resolver: Resolver = default_resolver,
+        allow: frozenset[Network] = frozenset(),
     ) -> None:
+        self._allow = allow
         self._store, self._fetch, self._scanner, self._resolver = (
             store,
             fetch_tools,
@@ -119,7 +121,7 @@ class AdminService:
         elif audience is not None or secret_arn is None or not _SECRET_ARN.fullmatch(secret_arn):
             raise AdminError(AdminFailure.INVALID, "delegation none needs a Secrets Manager ARN")
         try:
-            vet_url(url, resolver=self._resolver)
+            vet_url(url, resolver=self._resolver, allow=self._allow)
         except SsrfError:
             raise AdminError(AdminFailure.INVALID, "url rejected by egress policy") from None
         record = ServerRecord(
