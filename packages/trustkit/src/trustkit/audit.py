@@ -52,6 +52,8 @@ class AuditEvent:
     """Egress (ADR-0016): the agent workload token's jti hash."""
     record_version: int | None = None
     policy_ids: tuple[str, ...] = ()
+    actor_chain: tuple[str, ...] = ()
+    """Prior actors in a delegation chain, oldest first (ADR-0024)."""
     """Cedar ``@id``s of the determining policies (ADR-0022 §4)."""
     """Registry (ADR-0021): the agent record version a decision concerns."""
     t2_cached: bool | None = None

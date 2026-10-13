@@ -183,7 +183,10 @@ def world() -> World:
             # Only ALICE is entitled to delegate ticket reads (ADR-0023 §1).
             {"tickets.read": frozenset({ALICE})},
         ),
-        AuthorizationServer("agent-beta", "api://agent-beta", frozenset({CHAT}), AGENT_BETA_CLIENT),
+        # The gateway client may also exchange here: agent -> agent delegation (ADR-0024).
+        AuthorizationServer(
+            "agent-beta", "api://agent-beta", frozenset({CHAT, GATEWAY_CLIENT}), AGENT_BETA_CLIENT
+        ),
         AuthorizationServer(
             "workload", "api://tool-gateway", frozenset({AGENT_CLIENT, AGENT_BETA_CLIENT})
         ),
@@ -221,7 +224,10 @@ def world() -> World:
         (
             GATEWAY_CLIENT,
             "local:gateway",
-            {idp.issuer("tool-tickets"): frozenset({"tickets.read", "tickets.write"})},
+            {
+                idp.issuer("tool-tickets"): frozenset({"tickets.read", "tickets.write"}),
+                idp.issuer("agent-beta"): frozenset({"agent.invoke", "tickets.read"}),
+            },
         ),
     ):
         sg = signers[ref]

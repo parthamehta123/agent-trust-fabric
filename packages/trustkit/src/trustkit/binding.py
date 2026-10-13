@@ -166,6 +166,8 @@ class ActorBinding:
     subject_token: VerifiedToken
     raw_workload: str = field(repr=False)
     raw_subject: str = field(repr=False)
+    prior_actors: tuple[str, ...] = ()
+    """Agents earlier in the delegation chain, oldest first (ADR-0024). Empty = user -> agent."""
 
 
 def bind_actor(
@@ -174,6 +176,7 @@ def bind_actor(
     *,
     workload_validator: TokenValidator,
     agents: Mapping[str, AgentPolicy],
+    max_prior_actors: int = 0,
 ) -> ActorBinding:
     """Bind the agent's workload token (actor) to the user-delegated T2 (subject).
 
@@ -181,7 +184,9 @@ def bind_actor(
     2. ``client_id`` listed in ``agents``.                           -> AGENT_NOT_ALLOWED
     3. T2 valid under *that agent's* policy (so T2.aud is this agent) -> SUBJECT_INVALID
        This is the confused-deputy guard: agent A can't spend agent B's T2.
-    4. T2 has no ``act`` (delegation depth <= 1 until Phase 4).     -> DELEGATION_CHAIN
+    4. T2's ``act`` chain is well formed and has at most ``max_prior_actors`` actors
+       (ADR-0024: 0 = no chains, 1 = user -> A -> this agent), with no loops.
+                                                                    -> DELEGATION_CHAIN
     """
     try:
         workload = workload_validator.validate(workload_token)
@@ -197,7 +202,12 @@ def bind_actor(
         subject = policy.t2_validator.validate(subject_token)
     except TokenValidationError as e:
         raise ActorBindingError(ActorBindingReason.SUBJECT_INVALID, e.reason) from None
-    if "act" in subject.claims:
+    try:
+        prior = parse_act_chain(subject.claims.get("act"))
+    except ValueError:
+        raise ActorBindingError(ActorBindingReason.DELEGATION_CHAIN) from None
+    if len(prior) > max_prior_actors or agent in prior or len(set(prior)) != len(prior):
+        # Too long, or a loop (an agent acting "for" itself further up the chain).
         raise ActorBindingError(ActorBindingReason.DELEGATION_CHAIN)
     return ActorBinding(
         agent_client_id=agent,
@@ -207,4 +217,47 @@ def bind_actor(
         subject_token=subject,
         raw_workload=workload_token,
         raw_subject=subject_token,
+        prior_actors=prior,
     )
+
+
+MAX_CHAIN_DEPTH = 8
+"""Parser bound only (stack safety); the policy cap is ``max_prior_actors``."""
+
+
+def parse_act_chain(act: object) -> tuple[str, ...]:
+    """RFC 8693 §4.1 ``act`` -> actors oldest first. ``None`` -> ``()``.
+
+    Each level must be exactly ``{"sub": str}`` or ``{"sub": str, "act": {...}}``; any other
+    member, a non-string or empty ``sub``, or nesting beyond ``MAX_CHAIN_DEPTH`` raises
+    ``ValueError`` (never partially trusted)."""
+    newest_first: list[str] = []
+    node = act
+    while node is not None:
+        if len(newest_first) >= MAX_CHAIN_DEPTH:
+            raise ValueError("act chain too deep")
+        if not isinstance(node, dict) or "sub" not in node or not set(node) <= {"sub", "act"}:
+            raise ValueError("malformed act")
+        sub = node["sub"]
+        if not isinstance(sub, str) or not sub:
+            raise ValueError("malformed act subject")
+        newest_first.append(sub)
+        if "act" in node:
+            node = node["act"]
+            if node is None:  # an explicit null is ambiguous: never accept it
+                raise ValueError("null nested act")
+        else:
+            node = None
+    return tuple(reversed(newest_first))
+
+
+def expected_act(binding: ActorBinding) -> dict[str, object]:
+    """The ``act`` a delegated token minted for ``binding`` must carry: the current agent,
+    nesting the prior actors (newest outermost)."""
+    act: dict[str, object] = {"sub": binding.agent_client_id}
+    inner: dict[str, object] = act
+    for prior in reversed(binding.prior_actors):
+        nxt: dict[str, object] = {"sub": prior}
+        inner["act"] = nxt
+        inner = nxt
+    return act

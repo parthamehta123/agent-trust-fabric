@@ -37,8 +37,10 @@ class PublishError(Exception):
 def to_grant(v: AgentVersion) -> AgentGrant:
     """Map an approved record to the grant gateways enforce (every security field carried)."""
     spec = json.loads(canonical_spec_json(v.spec))
-    for presentation_only in ("display_name", "description"):
-        spec.pop(presentation_only)
+    name, description = spec.pop("display_name"), spec.pop("description")
+    if spec.get("card") is not None:
+        # The card is the only place the presentation fields travel (ADR-0024 §6).
+        spec["card"] = {**spec["card"], "name": name, "description": description}
     spec["agent_id"], spec["record_version"] = v.agent_id, v.version
     if v.expires_at is not None:
         spec["expires_at"] = int(v.expires_at.timestamp())

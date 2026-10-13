@@ -19,7 +19,6 @@ from typing import Final, NoReturn
 from atf_agent_registry.records import (
     OPEN_STATES,
     PRIVILEGED_APPROVAL_TTL,
-    REQUIRED_APPROVALS,
     AgentSpec,
     AgentVersion,
     Approval,
@@ -29,6 +28,7 @@ from atf_agent_registry.records import (
     StoreConflictError,
     StoreUnavailableError,
     Tier,
+    required_roles,
 )
 from trustkit.audit import AuditEvent, AuditSink, Decision
 from trustkit.jwt import TokenValidationError, TokenValidator
@@ -189,7 +189,9 @@ class RegistryService:
             self._deny(ev, who, agent_id, version, Failure.CONFLICT, "not in review")
         if who.subject == v.author or any(a.subject == who.subject for a in v.approvals):
             self._deny(ev, who, agent_id, version, Failure.SAME_PERSON, role.value)
-        required = REQUIRED_APPROVALS[v.spec.tier]
+        versions = self._versions(agent_id)
+        prev = self._approved(versions)
+        required = required_roles(v.spec, prev.spec if prev is not None else None)
         if role not in required:
             self._deny(ev, who, agent_id, version, Failure.INVALID, f"{role.value} not required")
         if role not in eligible_roles(who, v.spec.owner_team):
@@ -209,7 +211,6 @@ class RegistryService:
             approved_at=now,
             expires_at=now + PRIVILEGED_APPROVAL_TTL if v.spec.tier is Tier.PRIVILEGED else None,
         )
-        prev = self._approved(self._versions(agent_id))
         if prev is None:
             self._commit(ev, who, new, lambda: self._store.replace(new, expected=v), role)
         else:
@@ -230,7 +231,9 @@ class RegistryService:
             self._deny(ev, who, agent_id, version, Failure.CONFLICT, "not in review")
         if who.subject == v.author:
             self._deny(ev, who, agent_id, version, Failure.SAME_PERSON, "author")
-        if not eligible_roles(who, v.spec.owner_team) & REQUIRED_APPROVALS[v.spec.tier]:
+        prev = self._approved(self._versions(agent_id))
+        required = required_roles(v.spec, prev.spec if prev is not None else None)
+        if not eligible_roles(who, v.spec.owner_team) & required:
             self._deny(ev, who, agent_id, version, Failure.FORBIDDEN, "not an approver")
         new = self._next(v, state=State.REJECTED, decided_by=who.subject)
         self._commit(ev, who, new, lambda: self._store.replace(new, expected=v))

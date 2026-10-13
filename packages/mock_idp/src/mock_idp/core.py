@@ -104,6 +104,21 @@ class AuthorizationServer:
     downscoping); unlisted scopes are unrestricted."""
 
 
+MAX_ACTORS = 2
+"""Delegation chain cap (ADR-0024 §2): user -> A -> B, never further."""
+
+
+def _act_depth(act: Any) -> int:
+    """Number of actors in an ``act`` chain; malformed chains count as over the cap."""
+    depth, node = 0, act
+    while node is not None:
+        if not isinstance(node, dict) or not isinstance(node.get("sub"), str):
+            return MAX_ACTORS
+        depth += 1
+        node = node.get("act")
+    return depth
+
+
 class _OAuthError(Exception):
     def __init__(self, error: str, description: str, status: int = 400) -> None:
         self.error, self.description, self.status = error, description, status
@@ -430,8 +445,9 @@ class MockIdp:
                 raise _OAuthError("invalid_request", f"{name}_token must be an access_token")
         subject_as, subject = self._verify_issued_access_token(form["subject_token"])
         _, actor = self._verify_issued_access_token(form["actor_token"])
-        if "act" in subject:
-            raise _OAuthError("invalid_grant", "subject token is already delegated")
+        prior = subject.get("act")
+        if _act_depth(prior) >= MAX_ACTORS:  # ADR-0024 §2: at most two actors in a chain
+            raise _OAuthError("invalid_grant", "delegation chain too long")
         actor_client = actor.get("client_id")
         if (
             not isinstance(actor_client, str)
@@ -452,7 +468,8 @@ class MockIdp:
             "sub": subject["sub"],
             "aud": server.resource_audience,
             "client_id": client_id,
-            "act": {"sub": actor_client},
+            # RFC 8693 §4.1: the current actor outermost, earlier actors nested.
+            "act": {"sub": actor_client, **({"act": prior} if prior is not None else {})},
             "scope": scope,
             "jti": str(uuid.uuid4()),
             "iat": now,

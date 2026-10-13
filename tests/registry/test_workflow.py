@@ -83,7 +83,10 @@ class Env:
         v = self.svc.create_draft(author, AGENT, s or spec())
         self.svc.submit(author, AGENT, v.version)
         if v.spec.tier == "standard":
-            return self.svc.approve(BOB, AGENT, v.version, ApprovalRole.APPROVER)
+            out = self.svc.approve(BOB, AGENT, v.version, ApprovalRole.APPROVER)
+            if out.state is State.IN_REVIEW:  # an added delegation edge needs security too
+                out = self.svc.approve(CAROL, AGENT, v.version, ApprovalRole.SECURITY)
+            return out
         self.svc.approve(ALICE, AGENT, v.version, ApprovalRole.OWNER)
         return self.svc.approve(CAROL, AGENT, v.version, ApprovalRole.SECURITY)
 
@@ -493,3 +496,61 @@ class TestMoreRules:
     def test_reject_only_in_review(self, env: Env) -> None:
         v = env.svc.create_draft(DAVE, AGENT, spec())
         fails(Failure.CONFLICT, env.svc.reject, BOB, AGENT, v.version)
+
+
+# ----------------------------------------------------------------------------- delegation edges
+
+
+class TestDelegationEdges:
+    """ADR-0024 §4: adding a delegation edge always needs a security approval."""
+
+    def test_required_roles(self) -> None:
+        from atf_agent_registry.records import required_roles
+
+        plain, edged = spec(), spec(delegation={"may_delegate_to": ["0oa-agent-beta"]})
+        assert required_roles(plain, None) == frozenset({ApprovalRole.APPROVER})
+        assert required_roles(edged, None) == frozenset(
+            {ApprovalRole.APPROVER, ApprovalRole.SECURITY}
+        )
+        assert required_roles(edged, edged) == frozenset({ApprovalRole.APPROVER})  # unchanged
+        assert required_roles(plain, edged) == frozenset({ApprovalRole.APPROVER})  # removal
+        accepts = spec(delegation={"accepts_delegation_from": ["0oa-agent-beta"]})
+        assert ApprovalRole.SECURITY in required_roles(accepts, None)
+        elevated = spec(tier="elevated", delegation={"may_delegate_to": ["0oa-agent-beta"]})
+        assert required_roles(elevated, None) == frozenset(
+            {ApprovalRole.OWNER, ApprovalRole.SECURITY}
+        )
+
+    @pytest.mark.security
+    def test_standard_agent_adding_edge_needs_security(self, env: Env) -> None:
+        n = in_review(env, spec(delegation={"may_delegate_to": ["0oa-agent-beta"]}))
+        v = env.svc.approve(BOB, AGENT, n, ApprovalRole.APPROVER)
+        assert v.state is State.IN_REVIEW  # approver alone isn't enough
+        v = env.svc.approve(CAROL, AGENT, n, ApprovalRole.SECURITY)
+        assert v.state is State.APPROVED
+
+    def test_security_can_reject_edge_version(self, env: Env) -> None:
+        n = in_review(env, spec(delegation={"may_delegate_to": ["0oa-agent-beta"]}))
+        assert env.svc.reject(CAROL, AGENT, n).state is State.REJECTED
+
+    def test_removing_edge_needs_only_tier_roles(self, env: Env) -> None:
+        env.approved(spec(delegation={"may_delegate_to": ["0oa-agent-beta"]}))
+        n = in_review(env, spec())
+        assert env.svc.approve(BOB, AGENT, n, ApprovalRole.APPROVER).state is State.APPROVED
+
+
+class TestCardSpec:
+    @pytest.mark.security
+    @pytest.mark.parametrize(
+        "card",
+        [
+            {"endpoint": "http://agent.internal/a2a"},
+            {"endpoint": "https://a/b", "skills": [{"id": "Bad Id", "name": "x"}]},
+            {"endpoint": "https://a/b", "extra": 1},
+        ],
+    )
+    def test_invalid_card_rejected(self, card: dict[str, Any]) -> None:
+        from pydantic import ValidationError
+
+        with pytest.raises(ValidationError):
+            spec(card=card)

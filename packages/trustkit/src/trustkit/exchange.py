@@ -23,7 +23,7 @@ from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import Any, Final, Protocol
 
-from trustkit.binding import ActorBinding, BoundIdentity
+from trustkit.binding import ActorBinding, BoundIdentity, expected_act
 from trustkit.breaker import BreakerRegistry
 from trustkit.cache import TokenCache, cache_key
 from trustkit.jwt import (
@@ -305,13 +305,11 @@ class IdJagExchanger:
             jwks_uri=idp.resource_jwks_uri,
         )
         c = verified.claims
-        act = c.get("act")
         if (
             c.get("sub") != binding.subject
             or c.get("client_id") != profile.client.client_id
-            or not isinstance(act, dict)
-            or set(act) != {"sub"}  # exactly one level: no nested act (TM-TOOL-07)
-            or act.get("sub") != binding.agent_client_id
+            # Exactly the expected chain: this agent, nesting the prior actors (ADR-0024 §2).
+            or c.get("act") != expected_act(binding)
         ):
             raise ExchangeError(ExchangeReason.DELEGATED_INVALID, step=step)
         granted = c.get("scope")

@@ -81,7 +81,13 @@ class CedarPdp:
                 "attrs": dict(request.resource.attrs),
                 "parents": [],
             }
-            entities = self._entities.with_added_json_str(json.dumps([resource]), self._schema)
+            # Agents (principals, and `delegate` resources) come from the bundle's grants; only
+            # McpServer/Model resources are described per request by the gateway.
+            entities = (
+                self._entities
+                if request.resource.type is ResourceType.AGENT
+                else self._entities.with_added_json_str(json.dumps([resource]), self._schema)
+            )
             result = cedarpy.is_authorized(
                 {
                     "principal": _uid("Agent", request.agent_id),

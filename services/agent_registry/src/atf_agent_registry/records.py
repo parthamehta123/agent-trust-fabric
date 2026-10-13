@@ -78,6 +78,20 @@ class DelegationRights(_Strict):
     accepts_delegation_from: Annotated[frozenset[AgentId], Field(max_length=64)] = frozenset()
 
 
+class SkillSpec(_Strict):
+    id: Annotated[str, StringConstraints(pattern=r"^[a-z0-9][a-z0-9-]{0,62}$")]
+    name: Annotated[str, StringConstraints(min_length=1, max_length=128)]
+    description: Annotated[str, StringConstraints(max_length=1_000)] = ""
+
+
+class CardSpec(_Strict):
+    """A2A Agent Card material (ADR-0024 §6). ``endpoint`` is the internal runtime URL; agents
+    only ever see the gateway's URL."""
+
+    endpoint: HttpsUrl
+    skills: Annotated[tuple[SkillSpec, ...], Field(max_length=32)] = ()
+
+
 class AgentSpec(_Strict):
     """The editable part of a record. Tier rules are checked here; self-references in the
     workflow (the spec doesn't know its own ``agent_id``)."""
@@ -95,6 +109,24 @@ class AgentSpec(_Strict):
     )
     delegation: DelegationRights = DelegationRights()
     scanner_failure_mode: ScannerFailureMode = ScannerFailureMode.CLOSED
+    card: CardSpec | None = None
+
+
+def adds_delegation_edges(new: AgentSpec, previous: AgentSpec | None) -> bool:
+    """True if ``new`` names any delegation partner ``previous`` (the approved version) didn't."""
+    before = previous.delegation if previous is not None else DelegationRights()
+    return bool(
+        new.delegation.may_delegate_to - before.may_delegate_to
+        or new.delegation.accepts_delegation_from - before.accepts_delegation_from
+    )
+
+
+def required_roles(new: AgentSpec, previous: AgentSpec | None) -> frozenset[ApprovalRole]:
+    """Tier roles, plus ``security`` when the version adds a delegation edge (ADR-0024 §4)."""
+    roles = REQUIRED_APPROVALS[new.tier]
+    if adds_delegation_edges(new, previous):
+        roles = roles | {ApprovalRole.SECURITY}
+    return roles
 
 
 @dataclass(frozen=True)

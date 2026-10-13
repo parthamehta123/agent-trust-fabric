@@ -40,6 +40,22 @@ class DelegationGrant(_Strict):
     accepts_delegation_from: frozenset[AgentId] = frozenset()
 
 
+class Skill(_Strict):
+    id: Annotated[str, StringConstraints(pattern=r"^[a-z0-9][a-z0-9-]{0,62}$")]
+    name: Annotated[str, StringConstraints(min_length=1, max_length=128)]
+    description: Annotated[str, StringConstraints(max_length=1_000)] = ""
+
+
+class CardGrant(_Strict):
+    """A2A Agent Card material (ADR-0024 §6). ``endpoint`` is the *internal* runtime URL: the
+    gateway serves cards with its own URL and never discloses this one."""
+
+    name: Annotated[str, StringConstraints(min_length=1, max_length=128)]
+    description: Annotated[str, StringConstraints(max_length=2_000)] = ""
+    endpoint: HttpsUrl
+    skills: Annotated[tuple[Skill, ...], Field(max_length=32)] = ()
+
+
 class AgentGrant(_Strict):
     agent_id: AgentId
     record_version: Annotated[int, Field(gt=0)]
@@ -52,6 +68,7 @@ class AgentGrant(_Strict):
     scanner_failure_mode: ScannerFailureMode = ScannerFailureMode.CLOSED
     expires_at: Annotated[int, Field(gt=0)] | None = None
     """Epoch seconds; the grant is void after this even inside a fresh bundle."""
+    card: CardGrant | None = None
 
 
 def generate_permits(grants: Mapping[str, AgentGrant]) -> str:
@@ -86,5 +103,17 @@ def generate_permits(grants: Mapping[str, AgentGrant]) -> str:
                 f"permit (principal == Atf::Agent::{a}, "
                 f'action == Atf::Action::"call_model", '
                 f"resource == Atf::Model::{q(model)});"
+            )
+    # Delegation edges (ADR-0024 §4): only when *both* records name each other.
+    for frm in sorted(grants):
+        for to in sorted(grants[frm].delegation.may_delegate_to):
+            target = grants.get(to)
+            if target is None or frm not in target.delegation.accepts_delegation_from:
+                continue
+            out.append(
+                f'@id("delegate:{frm}->{to}")\n'
+                f"permit (principal == Atf::Agent::{q(frm)}, "
+                f'action == Atf::Action::"delegate", '
+                f"resource == Atf::Agent::{q(to)});"
             )
     return "\n\n".join(out) + ("\n" if out else "")

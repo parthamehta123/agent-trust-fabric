@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import contextlib
+import itertools
 import json
 import pathlib
 import threading
@@ -129,8 +130,17 @@ def tool_decision(
     server_id: str,
     delegation: str,
     requested: frozenset[str],
+    chain: tuple[str, ...] = (),
 ) -> PolicyDecision:
-    """Cedar ``invoke_tool``. An empty ``requested`` set is always deny (never ask for nothing)."""
+    """Cedar ``invoke_tool``. An empty ``requested`` set is always deny (never ask for nothing).
+
+    With a delegation ``chain`` (prior actors, oldest first; ADR-0024 §3) every actor must be
+    allowed ``invoke_tool`` for the same server and scopes, and every consecutive edge must be
+    allowed ``delegate`` (no amplification; all against the current bundle)."""
+    if chain:
+        return _chain_tool_decision(
+            loaded, agent_id, user, user_scopes, server_id, delegation, requested, chain
+        )
     if not requested:
         return PolicyDecision(allowed=False)
     return loaded.pdp.decide(
@@ -218,3 +228,89 @@ def policy_from_env(
         on_outcome=on_outcome,
     )
     return guard.current
+
+
+def _chain_tool_decision(
+    loaded: LoadedBundle,
+    agent_id: str,
+    user: str,
+    user_scopes: frozenset[str],
+    server_id: str,
+    delegation: str,
+    requested: frozenset[str],
+    chain: tuple[str, ...],
+) -> PolicyDecision:
+    """Every actor allowed ``invoke_tool`` with the same request, every edge allowed
+    ``delegate``. The decision is the conjunction; policy ids are collected for audit."""
+    if len(chain) > 1 or agent_id in chain:  # cap: at most one prior actor, never a loop
+        return PolicyDecision(allowed=False)
+    ids: list[str] = []
+    actors = (*chain, agent_id)
+    for actor in actors:
+        d = tool_decision(
+            loaded,
+            agent_id=actor,
+            user=user,
+            user_scopes=user_scopes,
+            server_id=server_id,
+            delegation=delegation,
+            requested=requested,
+        )
+        ids.extend(d.policy_ids)
+        if not d.allowed:
+            return PolicyDecision(allowed=False, policy_ids=tuple(sorted(set(ids))))
+    for frm, to in itertools.pairwise(actors):
+        d = delegate_decision(
+            loaded, from_agent=frm, to_agent=to, user=user, user_scopes=user_scopes
+        )
+        ids.extend(d.policy_ids)
+        if not d.allowed:
+            return PolicyDecision(allowed=False, policy_ids=tuple(sorted(set(ids))))
+    return PolicyDecision(allowed=True, policy_ids=tuple(sorted(set(ids))))
+
+
+def delegate_decision(
+    loaded: LoadedBundle,
+    *,
+    from_agent: str,
+    to_agent: str,
+    user: str,
+    user_scopes: frozenset[str],
+) -> PolicyDecision:
+    """Cedar ``delegate`` (both-sides edge, generated only when both records name each other)."""
+    if from_agent == to_agent:
+        return PolicyDecision(allowed=False)
+    return loaded.pdp.decide(
+        DecisionRequest(
+            agent_id=from_agent,
+            action=Action.DELEGATE,
+            resource=Resource(ResourceType.AGENT, to_agent),
+            context={"user": user, "user_scopes": sorted(user_scopes)},
+        )
+    )
+
+
+def visible_card(
+    loaded: LoadedBundle, *, viewer: str, agent_id: str, gateway_url: str, now: int
+) -> dict[str, object] | None:
+    """The A2A Agent Card for ``agent_id`` as served to ``viewer``, or ``None`` if the viewer may
+    not delegate to it (least disclosure, ADR-0024 §6). ``url`` is the gateway's, never the
+    runtime endpoint."""
+    target = loaded.grant(agent_id, now)
+    if target is None or target.card is None or loaded.grant(viewer, now) is None:
+        return None
+    if not delegate_decision(
+        loaded, from_agent=viewer, to_agent=agent_id, user="", user_scopes=frozenset()
+    ).allowed:
+        return None
+    card = target.card
+    return {
+        "name": card.name,
+        "description": card.description,
+        "url": gateway_url,
+        "version": str(target.record_version),
+        "capabilities": {"streaming": False, "pushNotifications": False},
+        "defaultInputModes": ["text/plain"],
+        "defaultOutputModes": ["text/plain"],
+        "skills": [{"id": s.id, "name": s.name, "description": s.description} for s in card.skills],
+    }

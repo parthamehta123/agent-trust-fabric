@@ -361,3 +361,18 @@ class TestBuildPublisher:
                 Bucket="atf-bundles", Key="b.jws"
             )
             assert body["Body"].read().count(b".") == 2
+
+
+def test_card_carried_into_grant(rig: Rig) -> None:
+    v = rig.env.approved(
+        spec(
+            card={
+                "endpoint": "https://agent-alpha.internal:8443/a2a",
+                "skills": [{"id": "triage", "name": "Triage", "description": "Sort tickets"}],
+            }
+        )
+    )
+    g = to_grant(v)
+    assert g.card is not None
+    assert (g.card.name, g.card.endpoint) == ("Alpha", "https://agent-alpha.internal:8443/a2a")
+    assert [s.id for s in g.card.skills] == ["triage"]
