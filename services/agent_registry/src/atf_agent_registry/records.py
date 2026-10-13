@@ -167,13 +167,18 @@ class RegistryStore(Protocol):
     def versions(self, agent_id: str) -> Sequence[AgentVersion]:
         """All versions, ascending."""
 
-    def agent_ids(self) -> Sequence[str]: ...
+    def agent_ids(self) -> Sequence[str]:
+        """Valid agent ids only (never the reserved bundle-counter item)."""
+
+    def next_bundle_version(self) -> int:
+        """Strictly increasing across calls, restarts and processes (ADR-0022 §7)."""
 
 
 class InMemoryRegistryStore:
     def __init__(self) -> None:
         self._items: dict[tuple[str, int], AgentVersion] = {}
         self._lock = threading.Lock()
+        self._bundle_version = 0
 
     def put_new(self, v: AgentVersion) -> None:
         with self._lock:
@@ -216,3 +221,8 @@ class InMemoryRegistryStore:
     def agent_ids(self) -> Sequence[str]:
         with self._lock:
             return sorted({a for a, _ in self._items})
+
+    def next_bundle_version(self) -> int:
+        with self._lock:
+            self._bundle_version += 1
+            return self._bundle_version

@@ -18,6 +18,7 @@ mock-mcp = { workspace = true }
 mock-llm = { workspace = true }
 atf-inference-gateway = { workspace = true }
 atf-agent-registry = { workspace = true }
+trustkit-policy = { workspace = true }
 
 [dependency-groups]
 dev = [
@@ -30,8 +31,8 @@ dev = [
     "pip-audit>=2.7",
     "cyclonedx-bom>=4.5",
     "trustkit-aws",
-    "moto[dynamodb,kms,secretsmanager]>=5.0",
-    "boto3-stubs[bedrock-runtime,dynamodb,kms,secretsmanager]>=1.35",
+    "moto[dynamodb,kms,s3,secretsmanager]>=5.0",
+    "boto3-stubs[bedrock-runtime,dynamodb,kms,s3,secretsmanager]>=1.35",
     "mock-idp",
     "trustkit-http",
     "atf-interceptor",
@@ -43,6 +44,7 @@ dev = [
     "mock-llm",
     "atf-inference-gateway",
     "atf-agent-registry",
+    "trustkit-policy",
 ]
 
 # --------------------------------------------------------------------------- ruff
@@ -80,8 +82,8 @@ ignore = ["TRY003"]
 python_version = "3.12"
 strict = true
 warn_unreachable = true
-mypy_path = ["packages/trustkit/src", "packages/trustkit_aws/src", "packages/mock_idp/src", "packages/trustkit_http/src", "services/interceptor/src", "services/agent_runtime/src", "packages/gateway_emulator/src", "packages/devstack/src", "services/mcp_gateway/src", "packages/mock_mcp/src", "packages/mock_llm/src", "services/inference_gateway/src", "services/agent_registry/src"]
-packages = ["trustkit", "trustkit_aws", "mock_idp", "trustkit_http", "atf_interceptor", "atf_agent_runtime", "gateway_emulator", "devstack", "atf_mcp_gateway", "mock_mcp", "mock_llm", "atf_inference_gateway", "atf_agent_registry"]
+mypy_path = ["packages/trustkit/src", "packages/trustkit_aws/src", "packages/mock_idp/src", "packages/trustkit_http/src", "services/interceptor/src", "services/agent_runtime/src", "packages/gateway_emulator/src", "packages/devstack/src", "services/mcp_gateway/src", "packages/mock_mcp/src", "packages/mock_llm/src", "services/inference_gateway/src", "services/agent_registry/src", "packages/trustkit_policy/src"]
+packages = ["trustkit", "trustkit_aws", "mock_idp", "trustkit_http", "atf_interceptor", "atf_agent_runtime", "gateway_emulator", "devstack", "atf_mcp_gateway", "mock_mcp", "mock_llm", "atf_inference_gateway", "atf_agent_registry", "trustkit_policy"]
 
 # --------------------------------------------------------------------------- pytest
 [tool.pytest.ini_options]
@@ -96,7 +98,7 @@ xfail_strict = true
 
 [tool.coverage.run]
 branch = true
-source = ["trustkit", "trustkit_aws", "mock_idp", "trustkit_http", "atf_interceptor", "atf_agent_runtime", "gateway_emulator", "devstack", "atf_mcp_gateway", "mock_mcp", "mock_llm", "atf_inference_gateway", "atf_agent_registry"]
+source = ["trustkit", "trustkit_aws", "mock_idp", "trustkit_http", "atf_interceptor", "atf_agent_runtime", "gateway_emulator", "devstack", "atf_mcp_gateway", "mock_mcp", "mock_llm", "atf_inference_gateway", "atf_agent_registry", "trustkit_policy"]
 
 [tool.coverage.report]
 fail_under = 95

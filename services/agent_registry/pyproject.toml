@@ -9,6 +9,7 @@ dependencies = [
     "pydantic>=2.8",
     "trustkit",
     "trustkit-http",
+    "trustkit-policy",
     "uvicorn>=0.30",
 ]
 
@@ -22,3 +23,4 @@ packages = ["src/atf_agent_registry"]
 [tool.uv.sources]
 trustkit = { workspace = true }
 trustkit-http = { workspace = true }
+trustkit-policy = { workspace = true }

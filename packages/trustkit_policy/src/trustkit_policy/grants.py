@@ -1,0 +1,90 @@
+"""What an approved agent may do, as carried in a bundle, and permit generation (ADR-0022 §3)."""
+
+from __future__ import annotations
+
+import re
+from collections.abc import Iterable, Mapping
+from typing import Annotated, Final, Literal
+
+from pydantic import BaseModel, ConfigDict, Field, StringConstraints
+
+from trustkit.profiles import HttpsUrl, ScannerFailureMode, Scope
+
+AgentId = Annotated[str, StringConstraints(pattern=r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")]
+TeamSlug = Annotated[str, StringConstraints(pattern=r"^[a-z0-9][a-z0-9-]{1,62}$")]
+ServerId = Annotated[str, StringConstraints(pattern=r"^[a-z0-9][a-z0-9-]{1,62}$")]
+ModelName = Annotated[str, StringConstraints(pattern=r"^[A-Za-z0-9._:/-]{1,200}$")]
+
+SAFE_ID: Final = r"^[A-Za-z0-9._:/-]{1,200}$"
+"""Everything interpolated into generated Cedar text must match this (re-checked)."""
+_SAFE: Final = re.compile(SAFE_ID)
+
+
+class _Strict(BaseModel):
+    model_config = ConfigDict(strict=True, extra="forbid", frozen=True)
+
+
+class T2Binding(_Strict):
+    t2_issuer: HttpsUrl
+    t2_audience: Annotated[str, StringConstraints(pattern=r"^\S{1,512}$")]
+    t2_jwks_uri: HttpsUrl
+
+
+class ModelGrant(_Strict):
+    daily_token_budget: Annotated[int, Field(gt=0, le=1_000_000_000)]
+    max_output_tokens: Annotated[int, Field(gt=0, le=32_768)]
+
+
+class DelegationGrant(_Strict):
+    may_delegate_to: frozenset[AgentId] = frozenset()
+    accepts_delegation_from: frozenset[AgentId] = frozenset()
+
+
+class AgentGrant(_Strict):
+    agent_id: AgentId
+    record_version: Annotated[int, Field(gt=0)]
+    tier: Literal["standard", "elevated", "privileged"]
+    owner_team: TeamSlug
+    ingress: T2Binding | None = None
+    tools: dict[ServerId, frozenset[Scope]] = Field(default_factory=dict)
+    models: dict[ModelName, ModelGrant] = Field(default_factory=dict)
+    delegation: DelegationGrant = DelegationGrant()
+    scanner_failure_mode: ScannerFailureMode = ScannerFailureMode.CLOSED
+    expires_at: Annotated[int, Field(gt=0)] | None = None
+    """Epoch seconds; the grant is void after this even inside a fresh bundle."""
+
+
+def generate_permits(grants: Mapping[str, AgentGrant]) -> str:
+    """Deterministic Cedar text: one permit per (agent, server) and per (agent, model).
+
+    Raises ``ValueError`` if any interpolated value fails ``SAFE_ID`` (defence in depth; the
+    schema patterns already exclude quotes and backslashes)."""
+
+    def q(value: str) -> str:
+        if not _SAFE.fullmatch(value):
+            raise ValueError("unsafe identifier in generated policy")
+        return f'"{value}"'
+
+    def cedar_set(values: Iterable[str]) -> str:
+        return "[" + ", ".join(q(v) for v in sorted(values)) + "]"
+
+    out: list[str] = []
+    for agent_id in sorted(grants):
+        g = grants[agent_id]
+        a = q(g.agent_id)
+        for server in sorted(g.tools):
+            out.append(
+                f'@id("grant:{g.agent_id}:tool:{server}")\n'
+                f"permit (principal == Atf::Agent::{a}, "
+                f'action == Atf::Action::"invoke_tool", '
+                f"resource == Atf::McpServer::{q(server)})\n"
+                f"when {{ {cedar_set(g.tools[server])}.containsAll(context.scopes) }};"
+            )
+        for model in sorted(g.models):
+            out.append(
+                f'@id("grant:{g.agent_id}:model:{model}")\n'
+                f"permit (principal == Atf::Agent::{a}, "
+                f'action == Atf::Action::"call_model", '
+                f"resource == Atf::Model::{q(model)});"
+            )
+    return "\n\n".join(out) + ("\n" if out else "")

@@ -2,6 +2,8 @@
 # so they keep a required reviewer even if the default rule is later relaxed.
 *                          @parthamehta123
 /packages/trustkit/        @parthamehta123
+/packages/trustkit_policy/ @parthamehta123
+/policies/                 @parthamehta123
 /docs/threat-model.md      @parthamehta123
 /docs/adr/                 @parthamehta123
 /infra/                    @parthamehta123

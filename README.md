@@ -31,8 +31,10 @@ Identity, authorization and governance plane for AI agents:
 | Path | What |
 |---|---|
 | `packages/trustkit` | Provider-neutral core: JWT validation, profiles, binding, signing, exchange, cache, scanning, audit |
-| `packages/trustkit_aws` | KMS ES256 signer, Bedrock Guardrails content scanner |
+| `packages/trustkit_aws` | KMS ES256 signer, Bedrock Guardrails content scanner, S3 bundle transport |
 | `packages/trustkit_http` | Hardened httpx token-endpoint and JWKS client |
+| `packages/trustkit_policy` | Cedar decision point and signed policy bundles |
+| `policies/` | Platform-wide Cedar guardrails (CODEOWNERS-reviewed) |
 | `packages/mock_idp` | Test-only IdP (RFC 8693 → ID-JAG, RFC 7523 → RFC 9068), independent of trustkit |
 | `services/interceptor` | AgentCore Gateway REQUEST/RESPONSE interceptor Lambda |
 | `services/agent_runtime` | Reference agent runtime; authorizes from T2 only |

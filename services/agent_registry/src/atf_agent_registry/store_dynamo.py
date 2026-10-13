@@ -29,6 +29,8 @@ if TYPE_CHECKING:
 __all__ = ["DynamoRegistryStore", "StoreUnavailableError", "ensure_local_table"]
 
 _CONDITION: Final = "#s = :s AND #r = :r"
+_COUNTER_ID: Final = "#bundle"
+"""Reserved item: '#' can never start a valid agent id."""
 _NAMES: Final = {"#s": "state", "#r": "rev"}
 
 
@@ -183,13 +185,31 @@ class DynamoRegistryStore:
         try:
             while True:
                 r = self._c.scan(**kwargs)
-                ids.update(i["agent_id"]["S"] for i in r.get("Items", []))
+                ids.update(
+                    i["agent_id"]["S"]
+                    for i in r.get("Items", [])
+                    if i["agent_id"]["S"] != _COUNTER_ID
+                )
                 if "LastEvaluatedKey" not in r:
                     break
                 kwargs["ExclusiveStartKey"] = r["LastEvaluatedKey"]
         except (ClientError, BotoCoreError):
             raise StoreUnavailableError("registry store unreachable") from None
         return sorted(ids)
+
+    def next_bundle_version(self) -> int:
+        """Atomic ``ADD`` on the reserved item ``agent_id = "#bundle"`` (never a valid id)."""
+        try:
+            r = self._c.update_item(
+                TableName=self._t,
+                Key=_key(_COUNTER_ID, 0),
+                UpdateExpression="ADD bundle_version :one",
+                ExpressionAttributeValues={":one": {"N": "1"}},
+                ReturnValues="UPDATED_NEW",
+            )
+            return int(r["Attributes"]["bundle_version"]["N"])
+        except (ClientError, BotoCoreError, KeyError, ValueError):
+            raise StoreUnavailableError("bundle counter unavailable") from None
 
     @staticmethod
     def _write(op: Any) -> None:

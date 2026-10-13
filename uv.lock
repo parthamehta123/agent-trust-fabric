@@ -17,6 +17,7 @@ members = [
     "trustkit",
     "trustkit-aws",
     "trustkit-http",
+    "trustkit-policy",
 ]
 
 [manifest.dependency-groups]
@@ -26,7 +27,7 @@ dev = [
     { name = "atf-inference-gateway", editable = "services/inference_gateway" },
     { name = "atf-interceptor", editable = "services/interceptor" },
     { name = "atf-mcp-gateway", editable = "services/mcp_gateway" },
-    { name = "boto3-stubs", extras = ["bedrock-runtime", "dynamodb", "kms", "secretsmanager"], specifier = ">=1.35" },
+    { name = "boto3-stubs", extras = ["bedrock-runtime", "dynamodb", "kms", "s3", "secretsmanager"], specifier = ">=1.35" },
     { name = "cyclonedx-bom", specifier = ">=4.5" },
     { name = "devstack", editable = "packages/devstack" },
     { name = "gateway-emulator", editable = "packages/gateway_emulator" },
@@ -34,7 +35,7 @@ dev = [
     { name = "mock-idp", editable = "packages/mock_idp" },
     { name = "mock-llm", editable = "packages/mock_llm" },
     { name = "mock-mcp", editable = "packages/mock_mcp" },
-    { name = "moto", extras = ["dynamodb", "kms", "secretsmanager"], specifier = ">=5.0" },
+    { name = "moto", extras = ["dynamodb", "kms", "s3", "secretsmanager"], specifier = ">=5.0" },
     { name = "mypy", specifier = ">=1.11" },
     { name = "pip-audit", specifier = ">=2.7" },
     { name = "pytest", specifier = ">=8.3" },
@@ -43,6 +44,7 @@ dev = [
     { name = "trustkit", editable = "packages/trustkit" },
     { name = "trustkit-aws", editable = "packages/trustkit_aws" },
     { name = "trustkit-http", editable = "packages/trustkit_http" },
+    { name = "trustkit-policy", editable = "packages/trustkit_policy" },
 ]
 
 [[package]]
@@ -202,6 +204,7 @@ dependencies = [
     { name = "pydantic" },
     { name = "trustkit" },
     { name = "trustkit-http" },
+    { name = "trustkit-policy" },
     { name = "uvicorn" },
 ]
 
@@ -212,6 +215,7 @@ requires-dist = [
     { name = "pydantic", specifier = ">=2.8" },
     { name = "trustkit", editable = "packages/trustkit" },
     { name = "trustkit-http", editable = "packages/trustkit_http" },
+    { name = "trustkit-policy", editable = "packages/trustkit_policy" },
     { name = "uvicorn", specifier = ">=0.30" },
 ]
 
@@ -356,6 +360,9 @@ dynamodb = [
 kms = [
     { name = "mypy-boto3-kms" },
 ]
+s3 = [
+    { name = "mypy-boto3-s3" },
+]
 secretsmanager = [
     { name = "mypy-boto3-secretsmanager" },
 ]
@@ -399,6 +406,19 @@ wheels = [
 [package.optional-dependencies]
 filecache = [
     { name = "filelock" },
+]
+
+[[package]]
+name = "cedarpy"
+version = "4.12.1"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/67/3f/049213baa33f87d85e7f47ee1cd4b697fcbb4958f80593e89432a62ed70e/cedarpy-4.12.1.tar.gz", hash = "sha256:357002b436d06ad00cd24c1dc27287933af9c45af0541b0cd9d52036cccfe8c2", size = 3312816, upload-time = "2026-09-24T00:41:23.637Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/6b/a5/f55d61f611426979dd642a1d1eea59ff547a2645c34e975d5786ced8ad75/cedarpy-4.12.1-cp312-cp312-macosx_10_12_x86_64.whl", hash = "sha256:f164ca11999e1d3a1641548d17755c3c45a5385b2590a642ef3122a1196947ca", size = 4476182, upload-time = "2026-09-24T00:41:18.54Z" },
+    { url = "https://files.pythonhosted.org/packages/46/1a/e76dd4c4073ce01a8691a9cf1687afdfc3de4bd6b74b41565105919da44d/cedarpy-4.12.1-cp312-cp312-macosx_11_0_arm64.whl", hash = "sha256:a935e3ed9e5873f88348469eb917e816335f62387d0f9ebed7058fac76c9a547", size = 4339805, upload-time = "2026-09-24T00:41:12.353Z" },
+    { url = "https://files.pythonhosted.org/packages/28/3d/18eb40e4243821375e47c8fd0af8dec6c55773e0d0e1d612a9aac5d74400/cedarpy-4.12.1-cp312-cp312-manylinux_2_17_aarch64.manylinux2014_aarch64.whl", hash = "sha256:e8ed70991b958f344017663f753f044070cd0e61dfd4ffe408ba05d48c48dea4", size = 4910340, upload-time = "2026-09-24T00:40:45.759Z" },
+    { url = "https://files.pythonhosted.org/packages/1b/e6/549c4d65786d9ff6bdaa27bb33a7174b5b09d3dfbe5a9375f4778f1c20ff/cedarpy-4.12.1-cp312-cp312-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:14630de081249519d76a6c9aca9f677251aa5aa722a056ac4e1f365db392f1ed", size = 4897285, upload-time = "2026-09-24T00:40:58.529Z" },
+    { url = "https://files.pythonhosted.org/packages/87/83/1aff6b3419b5459a2dd486cc41404df4cc4d55d926dda8f8e49571b09a52/cedarpy-4.12.1-cp312-cp312-win_amd64.whl", hash = "sha256:74b3d6deb0d482f9645b7709016ab81dc7405be83270b10790b646a60f475518", size = 4275503, upload-time = "2026-09-24T00:41:28.489Z" },
 ]
 
 [[package]]
@@ -1316,6 +1336,10 @@ dynamodb = [
     { name = "docker" },
     { name = "py-partiql-parser" },
 ]
+s3 = [
+    { name = "py-partiql-parser" },
+    { name = "pyyaml" },
+]
 
 [[package]]
 name = "msgpack"
@@ -1412,6 +1436,15 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/56/a5/a63234e7787019443c52f720afea57cf1a1d22a6e8e077b3c6a3916fdd98/mypy_boto3_kms-1.43.12.tar.gz", hash = "sha256:a4d23f018422a79bc4a886676f63eba548a98b06f5dcd0395e424d7c472eb340", size = 30688, upload-time = "2026-05-20T20:01:23.801Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/36/17/9d36757acee0987ef78220d1868f1ceb0cf458928444f5a81e98a4de3b44/mypy_boto3_kms-1.43.12-py3-none-any.whl", hash = "sha256:4a74f7b4aa9fcce9a1021ad2586059f2374a4b89baa251e57e6acc16282fd782", size = 39009, upload-time = "2026-05-20T20:01:20.104Z" },
+]
+
+[[package]]
+name = "mypy-boto3-s3"
+version = "1.43.106"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/46/db/e3922d6c62365c1098da97d9a775e78c66827df5cba11619a7d2a11cdae4/mypy_boto3_s3-1.43.106.tar.gz", hash = "sha256:731195f15830699a36e29d3c8abb2918bccd3587eb2edcb233f8046967893279", size = 79447, upload-time = "2026-09-30T22:44:48.472Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/b8/4a/52419b5496215ab52c6c257134c1ac0da25c1ca5d802f133424d02a43686/mypy_boto3_s3-1.43.106-py3-none-any.whl", hash = "sha256:e233d04dbcf3925522dff4346e75c37344ec3d1cbb82337e5eed2af263847668", size = 86791, upload-time = "2026-09-30T22:44:46.139Z" },
 ]
 
 [[package]]
@@ -2133,6 +2166,25 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "httpx", specifier = ">=0.27" },
+    { name = "trustkit", editable = "packages/trustkit" },
+]
+
+[[package]]
+name = "trustkit-policy"
+version = "0.0.0"
+source = { editable = "packages/trustkit_policy" }
+dependencies = [
+    { name = "cedarpy" },
+    { name = "joserfc" },
+    { name = "pydantic" },
+    { name = "trustkit" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "cedarpy", specifier = "==4.12.1" },
+    { name = "joserfc", specifier = ">=1.0" },
+    { name = "pydantic", specifier = ">=2.8" },
     { name = "trustkit", editable = "packages/trustkit" },
 ]
 
