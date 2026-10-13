@@ -22,6 +22,7 @@ from starlette.concurrency import run_in_threadpool
 
 from atf_a2a_gateway.broker import A2ABroker, A2AError, A2AFailure
 from trustkit.binding import ActorBinding, ActorBindingError
+from trustkit.config import ca_bundle, load_document
 
 _STATUS: Final = {
     A2AFailure.POLICY_UNAVAILABLE: (503, -32002),
@@ -155,7 +156,6 @@ def build_app(env: Mapping[str, str]) -> FastAPI:
     """``ATF_A2A_EGRESS_PROFILE_PATH`` (org IdP, this gateway's client, ``egress_inbound``),
     ``ATF_A2A_PUBLIC_URL``, ``ATF_A2A_TARGET_SCOPES``, ``ATF_CA_BUNDLE``, bundle settings
     (``trustkit_policy.runtime.policy_from_env``) and the local-only SSRF allowlist."""
-    import pathlib
     import sys
     import time
 
@@ -173,10 +173,10 @@ def build_app(env: Mapping[str, str]) -> FastAPI:
     from trustkit_http.ssrf import PinnedClient, parse_local_allowlist
     from trustkit_policy.runtime import actor_policies_from_bundle, policy_from_env
 
-    egress = json.loads(pathlib.Path(env["ATF_A2A_EGRESS_PROFILE_PATH"]).read_text())
+    egress = json.loads(load_document(env, "ATF_A2A_EGRESS_PROFILE"))
     public_url = env["ATF_A2A_PUBLIC_URL"].rstrip("/")
     target_scopes = frozenset(env["ATF_A2A_TARGET_SCOPES"].split())
-    ca, region = env["ATF_CA_BUNDLE"], env.get("AWS_REGION", "us-east-1")
+    ca, region = ca_bundle(env), env.get("AWS_REGION", "us-east-1")
     allow = parse_local_allowlist(env)
     http = HttpxTokenEndpoint(ca_bundle_path=ca)
     resolvers: dict[str, KeyResolver] = {}

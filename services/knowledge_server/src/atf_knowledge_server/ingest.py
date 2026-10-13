@@ -150,16 +150,55 @@ def _check(
     return None
 
 
+def bedrock_objects(chunks: Sequence[Chunk], prefix: str) -> list[tuple[str, bytes]]:
+    """The S3 layout for a Bedrock KB data source with ``chunking_strategy = NONE`` (ADR-0026
+    §18): one object per *our* chunk plus a ``.metadata.json`` sidecar, so chunk ids, labels and
+    provenance survive into ``Retrieve`` results exactly as the local store has them.
+    ``collection`` and ``classification_rank`` are the filterable keys (``bedrock_kb``)."""
+    base = prefix.strip("/")
+    out: list[tuple[str, bytes]] = []
+    for c in chunks:
+        n = c.chunk_id.rsplit(":", 1)[1]
+        key = f"{base}/{c.doc_id}/{n}.txt" if base else f"{c.doc_id}/{n}.txt"
+        attrs = {
+            "chunk_id": c.chunk_id,
+            "doc_id": c.doc_id,
+            "title": c.title,
+            "collection": c.collection,
+            "classification": c.classification,
+            "classification_rank": classification_rank(c.classification),
+            "source": c.provenance.source,
+            "sha256": c.provenance.sha256,
+            "ingested_by": c.provenance.ingested_by,
+            "ingested_at": c.provenance.ingested_at,
+        }
+        out.append((key, c.text.encode()))
+        out.append((f"{key}.metadata.json", json.dumps({"metadataAttributes": attrs}).encode()))
+    return out
+
+
+def _s3_target(uri: str) -> tuple[str, str]:
+    bucket, _, prefix = uri.removeprefix("s3://").partition("/")
+    if not uri.startswith("s3://") or not bucket:
+        raise ValueError("--out-s3 must be s3://bucket[/prefix]")
+    return bucket, prefix
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     """``python -m atf_knowledge_server.ingest --corpus DIR --config collections.json
-    --out index.jsonl --ingested-by NAME``. Each document is ``<name>.txt`` with a
-    ``<name>.json`` manifest. Exits non-zero if anything was rejected (and writes nothing)."""
+    (--out index.jsonl | --out-s3 s3://bucket/prefix) --ingested-by NAME``. Each document is
+    ``<name>.txt`` with a ``<name>.json`` manifest. Exits non-zero if anything was rejected (and
+    writes nothing). ``--out-s3`` writes the Bedrock KB source layout (``bedrock_objects``); in
+    AWS only the ingest role may write that bucket (ADR-0026 §18)."""
     ap = argparse.ArgumentParser(description="Ingest a labelled corpus into a knowledge index.")
     ap.add_argument("--corpus", type=pathlib.Path, required=True)
     ap.add_argument("--config", type=pathlib.Path, required=True)
-    ap.add_argument("--out", type=pathlib.Path, required=True)
+    out = ap.add_mutually_exclusive_group(required=True)
+    out.add_argument("--out", type=pathlib.Path)
+    out.add_argument("--out-s3")
     ap.add_argument("--ingested-by", required=True)
     args = ap.parse_args(argv)
+    target = _s3_target(args.out_s3) if args.out_s3 else None
     config = CollectionsConfig.model_validate_json(args.config.read_text())
     docs: list[tuple[Mapping[str, object], str]] = []
     for txt in sorted(args.corpus.glob("*.txt")):
@@ -177,9 +216,21 @@ def main(argv: Sequence[str] | None = None) -> int:
         for doc, reason in sorted(report.rejected.items()):
             print(f"rejected {doc}: {reason.value}", file=sys.stderr)
         return 1
-    write_index(report.chunks, args.out)
+    if target is None:
+        write_index(report.chunks, args.out)
+    else:
+        _put_all(target, bedrock_objects(report.chunks, target[1]))
     print(f"indexed {len(report.chunks)} chunks from {len(docs)} documents")
     return 0
+
+
+def _put_all(target: tuple[str, str], objects: Sequence[tuple[str, bytes]]) -> None:
+    """Upload with the task role; the bucket's default SSE-KMS key encrypts each object."""
+    import boto3
+
+    s3 = boto3.client("s3")
+    for key, body in objects:
+        s3.put_object(Bucket=target[0], Key=key, Body=body)
 
 
 if __name__ == "__main__":  # pragma: no cover

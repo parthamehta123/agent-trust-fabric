@@ -52,6 +52,7 @@ def litellm_complete(
     )
 
 
-def configure_tls(ca_bundle_path: str) -> None:
-    """Provider calls trust exactly this CA bundle (local stack: the ephemeral CA)."""
-    litellm.ssl_verify = ca_bundle_path
+def configure_tls(ca_bundle_path: str | None) -> None:
+    """Provider calls trust exactly this CA bundle (local stack: the ephemeral CA), or the
+    public trust store when none is pinned (AWS)."""
+    litellm.ssl_verify = ca_bundle_path if ca_bundle_path is not None else True

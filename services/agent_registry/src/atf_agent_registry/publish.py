@@ -21,6 +21,7 @@ from atf_agent_registry.records import (
     StoreUnavailableError,
     canonical_spec_json,
 )
+from trustkit.config import load_document
 from trustkit.signing import KeySigner, SigningError
 from trustkit_policy.bundle import MAX_AGE_S, Bundle, sign_bundle
 from trustkit_policy.grants import AgentGrant, generate_permits
@@ -165,7 +166,7 @@ def build_publisher(env: Mapping[str, str]) -> BundlePublisher:
 
     table, issuer = env["ATF_REGISTRY_TABLE"], env["ATF_BUNDLE_ISSUER"]
     region = env.get("AWS_REGION", "us-east-1")
-    guardrails = pathlib.Path(env["ATF_GUARDRAILS_PATH"]).read_text()
+    guardrails = load_document(env, "ATF_GUARDRAILS", inline_suffix="_CEDAR").decode()
     max_age = int(env.get("ATF_BUNDLE_MAX_AGE_S", str(MAX_AGE_CEILING_S)))
     heartbeat = int(env.get("ATF_BUNDLE_HEARTBEAT_S", str(HEARTBEAT_S)))
     if not 0 < max_age <= MAX_AGE_CEILING_S:

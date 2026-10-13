@@ -91,6 +91,30 @@ class TestSettings:
         with pytest.raises(ValueError, match="public"):
             read_jwk(p)
 
+    def test_inline_pinned_key(self) -> None:
+        """AWS: the key is rendered at deploy as ``ATF_BUNDLE_PUBLIC_JWK_JSON`` (ADR-0026 §14)."""
+        e = {
+            "ATF_BUNDLE_ISSUER": ISS,
+            "ATF_BUNDLE_PUBLIC_JWK_JSON": json.dumps(SIGNER.public_jwk()),
+        }
+        assert BundleSettings.from_env(e).public_jwk == SIGNER.public_jwk()
+
+    @pytest.mark.security
+    def test_inline_private_key_refused(self) -> None:
+        e = {
+            "ATF_BUNDLE_ISSUER": ISS,
+            "ATF_BUNDLE_PUBLIC_JWK_JSON": json.dumps({**SIGNER.public_jwk(), "d": "secret"}),
+        }
+        with pytest.raises(ValueError, match="public"):
+            BundleSettings.from_env(e)
+
+    @pytest.mark.security
+    def test_two_key_sources_refused(self, jwk_file: pathlib.Path) -> None:
+        """An ambiguous pin is a cold-start failure, never "first one wins"."""
+        e = env(jwk_file, ATF_BUNDLE_PUBLIC_JWK_JSON=json.dumps(SIGNER.public_jwk()))
+        with pytest.raises(ValueError, match="not both"):
+            BundleSettings.from_env(e)
+
     def test_missing_vars(self, jwk_file: pathlib.Path) -> None:
         with pytest.raises(KeyError):
             BundleSettings.from_env({"ATF_BUNDLE_PUBLIC_JWK_PATH": str(jwk_file)})

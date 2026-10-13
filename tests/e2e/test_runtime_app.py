@@ -50,6 +50,7 @@ class TestRuntimeApp:
         ca = tmp_path / "ca.pem"
         ca.write_text("x")
         env = {
+            "ATF_ENV": "local",  # the local stack must pin its CA (ADR-0026 §13)
             "ATF_RESOURCE_ISSUER": ISS,
             "ATF_RESOURCE_AUDIENCE": AUD,
             "ATF_RESOURCE_JWKS_URI": f"{ISS}/v1/keys",

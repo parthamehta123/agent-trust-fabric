@@ -3,7 +3,7 @@
 Environment:
 
 * ``ATF_ENV``: deployment environment. ``local`` enables ``local:`` signing keys.
-* ``ATF_PROFILES_PATH``: gateway profiles JSON (Phase 6: SSM-backed source).
+* ``ATF_PROFILES_PATH`` or ``ATF_PROFILES_JSON``: gateway profiles (ADR-0026 §13).
 * ``ATF_CA_BUNDLE``: optional. Restricts outbound TLS trust (local stack only).
 * ``ATF_LOCAL_KEYS_DIR``: directory of ``<name>.pem`` for ``local:<name>`` refs. Honoured only
   when ``ATF_ENV=local``.
@@ -18,7 +18,6 @@ from __future__ import annotations
 
 import contextlib
 import os
-import pathlib
 import sys
 import threading
 import time
@@ -29,6 +28,7 @@ from atf_interceptor.events import Shape, deny, request_id_from_context
 from atf_interceptor.handler import Handler, InterceptorDeps, make_handler
 from trustkit.audit import AuditEvent, AuditSink, Decision, JsonLinesSink
 from trustkit.breaker import BreakerRegistry, CircuitState
+from trustkit.config import ca_bundle, load_document
 from trustkit.exchange import IdJagExchanger
 from trustkit.jwt import JwksKeyResolver, KeyResolver
 from trustkit.profiles import load_profiles
@@ -68,8 +68,8 @@ def _deny_all(sink: AuditSink) -> Handler:
 def build_handler(env: Mapping[str, str]) -> Handler:
     sink = JsonLinesSink(sys.stdout)
     try:
-        registry = load_profiles(pathlib.Path(env["ATF_PROFILES_PATH"]).read_bytes())
-        http = HttpxTokenEndpoint(ca_bundle_path=env.get("ATF_CA_BUNDLE"))
+        registry = load_profiles(load_document(env, "ATF_PROFILES"))
+        http = HttpxTokenEndpoint(ca_bundle_path=ca_bundle(env))
         resolvers: dict[str, KeyResolver] = {}
 
         def jwks(uri: str) -> KeyResolver:

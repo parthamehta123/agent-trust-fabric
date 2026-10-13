@@ -16,6 +16,7 @@ from fastapi.responses import JSONResponse
 from starlette.concurrency import run_in_threadpool
 
 from atf_inference_gateway.service import ChatError, InferenceService
+from trustkit.config import ca_bundle, load_document
 from trustkit.jwt import TokenValidationError, TokenValidator
 
 
@@ -67,7 +68,6 @@ def build_app(env: Mapping[str, str]) -> FastAPI:
     ``AWS_REGION``. With ``ATF_ENV=local`` the budget table is created if missing.
     """
     import datetime
-    import pathlib
     import sys
 
     import boto3
@@ -83,12 +83,11 @@ def build_app(env: Mapping[str, str]) -> FastAPI:
     from trustkit_http.endpoint import HttpxTokenEndpoint
     from trustkit_policy.runtime import policy_from_env
 
-    profile_path, routes_path = env["ATF_INFERENCE_PROFILE_PATH"], env["ATF_MODEL_ROUTES_PATH"]
-    table, ca = env["ATF_BUDGET_TABLE"], env["ATF_CA_BUNDLE"]
+    table, ca = env["ATF_BUDGET_TABLE"], ca_bundle(env)
     region = env.get("AWS_REGION", "us-east-1")
 
-    profile = load_inference_profile(pathlib.Path(profile_path).read_bytes())
-    routes = load_routes(pathlib.Path(routes_path).read_bytes(), env=env)
+    profile = load_inference_profile(load_document(env, "ATF_INFERENCE_PROFILE"))
+    routes = load_routes(load_document(env, "ATF_MODEL_ROUTES"), env=env)
     configure_tls(ca)
 
     http = HttpxTokenEndpoint(ca_bundle_path=ca)

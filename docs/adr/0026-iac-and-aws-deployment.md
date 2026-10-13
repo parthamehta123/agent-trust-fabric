@@ -90,3 +90,70 @@
       - only the inference gateway invokes models;
       - the registry never deletes;
       - the admin plane is reachable only through Verified Access, and closed without it.
+
+## 6c decisions (2026-10-13)
+
+12. **Config and secrets.**
+    - Non-secret config (issuers, JWKS URIs, audiences, table names, key ARNs, bundle
+      location) is set as task-definition environment variables.
+    - Services authenticate to the IdP with `private_key_jwt`, signed by their own KMS key
+      (`trustkit_aws.signers`). **No service holds a client secret**, and nothing is injected
+      through ECS `secrets`.
+    - The execution role has no Secrets Manager access. Tool credentials stay in Secrets
+      Manager and are fetched at runtime by the MCP gateway's task role only.
+
+13. **File-shaped config is inline and immutable.**
+    - Documents previously read from `ATF_<X>_PATH` (egress profiles, model routes, tool
+      authorities, interceptor profiles, guardrails) can also come from `ATF_<X>_JSON`. A shared
+      loader accepts **exactly one** of the two.
+    - Terraform renders them with `jsonencode`, so every config change is a new task-definition
+      or function revision: auditable and reversible.
+    - Tests assert the rendered environment stays well under the container-definition limit and
+      contains nothing secret-shaped.
+
+14. **The bundle verification key is pinned at deploy.**
+    - Terraform reads the bundle key's public half (`aws_kms_public_key`) and passes it as
+      `ATF_BUNDLE_PUBLIC_JWK_JSON`.
+    - Verifiers have **no** KMS permission on the bundle key. Rotating it is an explicit
+      redeploy (ADR-0022).
+
+15. **AgentCore Gateway: our bundle is authoritative.**
+    - The gateway uses a `CUSTOM_JWT` authorizer pinned to the IdP discovery URL, with
+      `allowed_audience` and `allowed_clients`.
+    - A `REQUEST` interceptor Lambda runs the same `trustkit_policy` code: bundle verification,
+      `authorize_tool` and the delegated exchange. It does not pass request headers.
+    - There is **no** AgentCore Policy engine, so we never keep a second, unsigned copy of
+      policy in Terraform state.
+    - `exception_level` is left unset, so callers get no debug detail.
+
+16. **Interceptor Lambda.**
+    - An arm64 container image from the immutable, scan-on-push ECR repository, deployed **by
+      digest**.
+    - VPC-attached in private subnets with its own security group. Egress goes only to VPC
+      endpoints, gateway prefix lists and the IdP CIDRs.
+    - Reserved concurrency and a KMS-encrypted environment.
+
+17. **Bedrock Guardrail.** The inference gateway pins a **published version**, never DRAFT:
+    - prompt-attack filter HIGH on input;
+    - content filters MEDIUM in both directions;
+    - PII (email, phone, name, address) **anonymized** on output, matching ADR-0025's
+      mask-at-retrieval rule;
+    - credential-shaped data **blocked**: managed AWS key types plus regexes for PEM private
+      keys and JWT-shaped bearer tokens.
+
+18. **Knowledge base.**
+    - Titan Text Embeddings v2 (1024 dimensions, cosine) on an S3 Vectors index.
+      `collection` and `classification_rank` are filterable; provenance is non-filterable.
+    - The KB source bucket can be written **only** by the ingest role, which runs our scanner
+      and manifest checks. A bucket policy denies every other writer. Each document carries a
+      `.metadata.json` with its labels.
+    - The Bedrock KB service role is read-only on the source bucket and limited to the one
+      vector index.
+    - Everything is encrypted with the data key.
+    - The data source uses `chunking_strategy = NONE`. The ingest export (`ingest --out-s3`)
+      writes **one object per our chunk** with a `.metadata.json` sidecar. Chunk ids, labels and
+      provenance therefore reach `Retrieve` exactly as the local store has them, and the
+      per-chunk scan and labelling of ADR-0025 §5 still hold. A contract test round-trips the
+      export through the `Retrieve` adapter.
+    - Follow-up: re-ingest doesn't yet delete objects for withdrawn documents. Until it does, a
+      withdrawal is a manual delete by the ingest role followed by a data-source sync.

@@ -12,6 +12,7 @@ from atf_knowledge_server.ingest import (
     MAX_CHUNK_CHARS,
     CollectionsConfig,
     Rejection,
+    bedrock_objects,
     chunk_text,
     ingest_documents,
     main,
@@ -177,6 +178,86 @@ class TestCli:
         (tmp_path / "corpus" / "orphan.txt").write_text("unlabelled content")
         assert main(args) == 1
         assert not (tmp_path / "index.jsonl").exists()
+
+
+class TestBedrockExport:
+    """The S3 layout for a ``chunking_strategy = NONE`` data source (ADR-0026 §18)."""
+
+    def test_round_trips_through_the_retrieve_adapter(self) -> None:
+        """Contract: what ingest writes is exactly what ``bedrock_kb`` rebuilds on retrieval."""
+        from atf_knowledge_server.bedrock_kb import _to_chunk
+
+        chunks = run((manifest(), TEXT)).chunks
+        objs = dict(bedrock_objects(chunks, "corpus/"))
+        assert len(objs) == 2 * len(chunks)
+        for c in chunks:
+            key = f"corpus/{c.doc_id}/{c.chunk_id.rsplit(':', 1)[1]}.txt"
+            md = json.loads(objs[f"{key}.metadata.json"])["metadataAttributes"]
+            item = {"content": {"text": objs[key].decode()}, "metadata": md}
+            back = _to_chunk(item)
+            assert back is not None
+            assert back.model_dump(exclude={"vector"}) == c.model_dump(exclude={"vector"})
+
+    @pytest.mark.security
+    def test_filterable_rank_matches_label(self) -> None:
+        """The pre-filter compares ``classification_rank``; it must agree with the label."""
+        chunks = run((manifest(classification="confidential"), TEXT)).chunks
+        for key, body in bedrock_objects(chunks, ""):
+            if key.endswith(".metadata.json"):
+                md = json.loads(body)["metadataAttributes"]
+                assert (md["classification"], md["classification_rank"]) == ("confidential", 2)
+
+    def test_no_embeddings_exported(self) -> None:
+        """Bedrock embeds with the KB's model; our local hashing vectors never leave."""
+        chunks = run((manifest(), TEXT)).chunks
+        for key, body in bedrock_objects(chunks, "p"):
+            if key.endswith(".metadata.json"):
+                assert "vector" not in json.loads(body)["metadataAttributes"]
+
+
+class TestCliS3:
+    def args(self, tmp_path: pathlib.Path, *docs: tuple[dict[str, Any], str]) -> list[str]:
+        a = TestCli().corpus(tmp_path, *docs)
+        i = a.index("--out")
+        return [*a[:i], "--out-s3", "s3://kb-source/corpus", *a[i + 2 :]]
+
+    def test_uploads_layout(self, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        from atf_knowledge_server import ingest
+
+        sent: list[tuple[tuple[str, str], list[str]]] = []
+        monkeypatch.setattr(
+            ingest, "_put_all", lambda t, objs: sent.append((t, [k for k, _ in objs]))
+        )
+        assert main(self.args(tmp_path, (manifest(), TEXT))) == 0
+        ((target, keys),) = sent
+        assert target == ("kb-source", "corpus")
+        assert all(k.startswith("corpus/runbook-1/") for k in keys)
+
+    @pytest.mark.security
+    def test_rejection_uploads_nothing(
+        self, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from atf_knowledge_server import ingest
+
+        sent: list[object] = []
+        monkeypatch.setattr(ingest, "_put_all", lambda t, objs: sent.append(t))
+        args = self.args(
+            tmp_path, (manifest(), TEXT), (manifest(doc_id="x", collection="legal"), TEXT)
+        )
+        assert main(args) == 1
+        assert sent == []
+
+    @pytest.mark.parametrize("uri", ["kb-source/corpus", "s3://", "s3:///corpus", "https://x/y"])
+    def test_bad_target(self, tmp_path: pathlib.Path, uri: str) -> None:
+        a = self.args(tmp_path, (manifest(), TEXT))
+        a[a.index("--out-s3") + 1] = uri
+        with pytest.raises(ValueError, match="s3://bucket"):
+            main(a)
+
+    def test_out_and_out_s3_exclusive(self, tmp_path: pathlib.Path) -> None:
+        a = TestCli().corpus(tmp_path, (manifest(), TEXT))
+        with pytest.raises(SystemExit):
+            main([*a, "--out-s3", "s3://b/p"])
 
 
 def test_pii_may_be_ingested() -> None:

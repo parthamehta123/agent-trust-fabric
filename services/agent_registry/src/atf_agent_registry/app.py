@@ -20,6 +20,7 @@ from atf_agent_registry.workflow import (
     RegistryService,
     authorize,
 )
+from trustkit.config import ca_bundle
 from trustkit.jwt import TokenValidator
 
 _STATUS: Final = {
@@ -165,7 +166,7 @@ def build_app(env: Mapping[str, str]) -> FastAPI:
 
     issuer, audience = env["ATF_REGISTRY_ISSUER"], env["ATF_REGISTRY_AUDIENCE"]
     jwks_uri, table = env["ATF_REGISTRY_JWKS_URI"], env["ATF_REGISTRY_TABLE"]
-    ca, region = env["ATF_CA_BUNDLE"], env.get("AWS_REGION", "us-east-1")
+    ca, region = ca_bundle(env), env.get("AWS_REGION", "us-east-1")
 
     http = HttpxTokenEndpoint(ca_bundle_path=ca)
     validator = TokenValidator(

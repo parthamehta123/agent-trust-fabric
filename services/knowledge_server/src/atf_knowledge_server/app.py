@@ -26,6 +26,7 @@ from atf_knowledge_server.retrieval import (
     Retriever,
 )
 from trustkit.binding import parse_act_chain
+from trustkit.config import ca_bundle
 from trustkit.jwt import TokenValidationError, TokenValidator
 
 _TOOL: Final = {
@@ -192,7 +193,7 @@ def build_app(env: Mapping[str, str]) -> FastAPI:
         env["ATF_KB_JWKS_URI"],
     )
     region = env.get("AWS_REGION", "us-east-1")
-    http = HttpxTokenEndpoint(ca_bundle_path=env["ATF_CA_BUNDLE"])
+    http = HttpxTokenEndpoint(ca_bundle_path=ca_bundle(env))
     validator = TokenValidator(
         ValidationPolicy(issuer=issuer, audiences=frozenset({audience}), expected_typ="at+jwt"),
         JwksKeyResolver(fetch=lambda: http.get_json(jwks_uri)),

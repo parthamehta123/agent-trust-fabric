@@ -17,6 +17,7 @@ from typing import Final
 
 from trustkit.audit import AuditEvent, AuditSink, Decision
 from trustkit.binding import AgentPolicy
+from trustkit.config import load_document
 from trustkit.exchange import KeyResolverFactory
 from trustkit.jwt import TokenValidator, ValidationPolicy, VerifiedToken
 from trustkit.profiles import ScannerFailureMode
@@ -40,11 +41,11 @@ class BundleSettings:
 
     @staticmethod
     def from_env(env: Mapping[str, str]) -> BundleSettings:
-        """``ATF_BUNDLE_ISSUER``, ``ATF_BUNDLE_PUBLIC_JWK_PATH`` (pinned key file),
+        """``ATF_BUNDLE_ISSUER``, ``ATF_BUNDLE_PUBLIC_JWK_PATH`` or ``_JSON`` (pinned key),
         ``ATF_BUNDLE_MAX_AGE_S`` (default and ceiling 600), ``ATF_BUNDLE_REFRESH_S`` (default
         60, must be < max age). Anything invalid raises ``ValueError`` (cold-start failure)."""
         issuer = env["ATF_BUNDLE_ISSUER"]
-        jwk = read_jwk(pathlib.Path(env["ATF_BUNDLE_PUBLIC_JWK_PATH"]))
+        jwk = parse_jwk(load_document(env, "ATF_BUNDLE_PUBLIC_JWK"))
         max_age = int(env.get("ATF_BUNDLE_MAX_AGE_S", str(MAX_AGE_CEILING_S)))
         refresh = int(env.get("ATF_BUNDLE_REFRESH_S", str(DEFAULT_REFRESH_S)))
         if not 0 < max_age <= MAX_AGE_CEILING_S:
@@ -169,8 +170,12 @@ def effective_fail_mode(
 
 
 def read_jwk(path: pathlib.Path) -> Mapping[str, str]:
+    return parse_jwk(path.read_bytes())
+
+
+def parse_jwk(raw: bytes) -> Mapping[str, str]:
     """The pinned bundle verification key: a *public* EC JWK (a private key is a config error)."""
-    doc = json.loads(path.read_text())
+    doc = json.loads(raw)
     if not isinstance(doc, dict) or "d" in doc:
         raise ValueError("bundle verification key must be a public JWK")
     return {str(k): str(v) for k, v in doc.items()}

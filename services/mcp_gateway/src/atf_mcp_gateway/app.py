@@ -36,6 +36,7 @@ from atf_mcp_gateway.admin import (
 from atf_mcp_gateway.proxy import Authorizer, McpProxy
 from atf_mcp_gateway.servers import Delegation, ServerRecord
 from trustkit.binding import ActorBinding, ActorBindingError
+from trustkit.config import load_document
 from trustkit.exchange import KeyResolverFactory
 from trustkit.jwt import TokenValidator
 from trustkit_policy.bundle import LoadedBundle
@@ -302,7 +303,6 @@ def create_admin_app(admin: AdminService, admin_validator: TokenValidator) -> Fa
 
 def _common(env: Mapping[str, str]) -> dict[str, Any]:
     """Shared wiring. Required variables are read up front: a missing one fails cold start."""
-    import pathlib
 
     import boto3
 
@@ -319,7 +319,7 @@ def _common(env: Mapping[str, str]) -> dict[str, Any]:
     allow = parse_local_allowlist(env)  # raises outside ATF_ENV=local (ADR-0018 §1)
     from atf_mcp_gateway.authorities import load_authorities
 
-    authorities = load_authorities(pathlib.Path(env["ATF_TOOL_AUTHORITIES_PATH"]).read_bytes())
+    authorities = load_authorities(load_document(env, "ATF_TOOL_AUTHORITIES"))
     http = HttpxTokenEndpoint(ca_bundle_path=ca)
     resolvers: dict[str, KeyResolver] = {}
 
@@ -344,7 +344,6 @@ def _common(env: Mapping[str, str]) -> dict[str, Any]:
 
 
 def build_data_app(env: Mapping[str, str]) -> FastAPI:
-    import pathlib
     import sys
     import time
 
@@ -362,7 +361,7 @@ def build_data_app(env: Mapping[str, str]) -> FastAPI:
     from trustkit_policy.runtime import policy_from_env
 
     c = _common(env)
-    egress_doc = json.loads(pathlib.Path(env["ATF_EGRESS_PROFILE_PATH"]).read_text())
+    egress_doc = json.loads(load_document(env, "ATF_EGRESS_PROFILE"))
     ei = EgressInbound.model_validate_json(json.dumps(egress_doc["egress_inbound"]))
     workload_v = TokenValidator(
         ValidationPolicy(issuer=ei.issuer, audiences=ei.audiences, expected_typ="at+jwt"),

@@ -125,14 +125,30 @@ class TestColdStartFailsClosed:
         p = tmp_path / "profiles.json"
         p.write_text(json.dumps({"version": 1, "profiles": [profile_doc(gateway_id="gw-alpha")]}))
         write_key(tmp_path / "keys", "chat")
-        handler = build_handler(
-            {
-                "ATF_ENV": "local",
-                "ATF_PROFILES_PATH": str(p),
-                "ATF_LOCAL_KEYS_DIR": str(tmp_path / "keys"),
-            }
-        )
-        assert status(handler(event(), ctx())) == 401
+        env = {
+            "ATF_ENV": "local",
+            "ATF_PROFILES_PATH": str(p),
+            "ATF_LOCAL_KEYS_DIR": str(tmp_path / "keys"),
+            "ATF_CA_BUNDLE": write_ca(tmp_path),
+        }
+        assert status(build_handler(env)(event(), ctx())) == 401
+        # The local stack without its pinned CA never widens trust: it fails closed instead.
+        no_ca = {k: v for k, v in env.items() if k != "ATF_CA_BUNDLE"}
+        assert status(build_handler(no_ca)(event(), ctx())) == 503
+
+    def test_inline_profiles(self, tmp_path: pathlib.Path) -> None:
+        """AWS: profiles rendered at deploy as ``ATF_PROFILES_JSON`` (ADR-0026 §13)."""
+        doc = json.dumps({"version": 1, "profiles": [profile_doc(gateway_id="gw-alpha")]})
+        write_key(tmp_path / "keys", "chat")
+        env = {
+            "ATF_ENV": "local",
+            "ATF_PROFILES_JSON": doc,
+            "ATF_LOCAL_KEYS_DIR": str(tmp_path / "keys"),
+            "ATF_CA_BUNDLE": write_ca(tmp_path),
+        }
+        assert status(build_handler(env)(event(), ctx())) == 401
+        both = {**env, "ATF_PROFILES_PATH": str(tmp_path / "unused.json")}
+        assert status(build_handler(both)(event(), ctx())) == 503
 
     def test_never_raises_even_with_hostile_env(self) -> None:
         handler = build_handler({"ATF_ENV": "local", "ATF_PROFILES_PATH": "\x00bad"})
@@ -155,6 +171,13 @@ def test_kms_reference_builds_kms_signer_in_any_env() -> None:
         assert isinstance(f(arn), KmsEs256Signer)
 
 
+def write_ca(tmp_path: pathlib.Path) -> str:
+    from tests.inference.test_wiring import _ca_pem
+
+    (tmp_path / "ca.pem").write_bytes(_ca_pem())
+    return str(tmp_path / "ca.pem")
+
+
 @pytest.mark.security
 class TestBundleWiring:
     def base(self, tmp_path: pathlib.Path) -> dict[str, str]:
@@ -165,6 +188,7 @@ class TestBundleWiring:
             "ATF_ENV": "local",
             "ATF_PROFILES_PATH": str(p),
             "ATF_LOCAL_KEYS_DIR": str(tmp_path / "keys"),
+            "ATF_CA_BUNDLE": write_ca(tmp_path),
         }
 
     def test_bundle_configured_handler_runs(self, tmp_path: pathlib.Path) -> None:

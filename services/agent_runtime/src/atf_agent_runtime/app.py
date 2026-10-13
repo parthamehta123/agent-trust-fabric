@@ -18,6 +18,7 @@ from fastapi import FastAPI, Request, Response
 from starlette.concurrency import run_in_threadpool
 
 from atf_agent_runtime.runtime import AgentRuntime
+from trustkit.config import ca_bundle
 from trustkit.jwt import JwksKeyResolver
 from trustkit.resource import Principal, ResourceAuthorizer
 from trustkit_http.endpoint import HttpxTokenEndpoint
@@ -126,7 +127,7 @@ def build_runtime_from_env(env: Mapping[str, str]) -> AgentRuntime:
       ``delegate`` actor -> this agent holds on the *current* bundle (no bundle -> refuse).
     * ``ATF_MCP_URL`` + ``ATF_WORKLOAD_*``: act as the minimal tool-using agent."""
     issuer, audience = env["ATF_RESOURCE_ISSUER"], env["ATF_RESOURCE_AUDIENCE"]
-    jwks_uri, ca = env["ATF_RESOURCE_JWKS_URI"], env["ATF_CA_BUNDLE"]
+    jwks_uri, ca = env["ATF_RESOURCE_JWKS_URI"], ca_bundle(env)
     http = HttpxTokenEndpoint(ca_bundle_path=ca)
     keys = JwksKeyResolver(fetch=lambda: http.get_json(jwks_uri))
 
