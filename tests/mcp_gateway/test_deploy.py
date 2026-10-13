@@ -39,6 +39,23 @@ from trustkit_http.ssrf import SsrfConfigError, SsrfError, parse_local_allowlist
 SECRET_ARN_NAME = "weather-key"
 
 
+def _authorities() -> Any:
+    from atf_mcp_gateway.authorities import ToolAuthority
+
+    from tests.exchange.conftest import BASE
+
+    tool_as = f"{BASE}/oauth2/tool-tickets"
+    return {
+        "api://tool-tickets": ToolAuthority(
+            issuer=tool_as, token_endpoint=f"{tool_as}/v1/token", jwks_uri=f"{tool_as}/v1/keys"
+        )
+    }
+
+
+AUTHORITIES = _authorities()
+"""Delegated-token audience -> its AS (ADR-0025 §4 amendment)."""
+
+
 # ----------------------------------------------------------------------------- SSRF allowlist
 
 
@@ -183,6 +200,7 @@ class TestCredentials:
             exchanger=world.exchanger,
             secrets=counting,
             egress_base=egress_doc(),
+            authorities=AUTHORITIES,
             now=lambda: clock[0],
         )  # type: ignore[arg-type]
         rec = record("weather", TOOLS, delegation=Delegation.NONE)
@@ -198,7 +216,10 @@ class TestCredentials:
     def test_secret_errors_are_log_safe(self, world: World, secrets: Any) -> None:
         client, arn = secrets
         creds = GatewayCredentials(
-            exchanger=world.exchanger, secrets=client, egress_base=egress_doc()
+            exchanger=world.exchanger,
+            secrets=client,
+            egress_base=egress_doc(),
+            authorities=AUTHORITIES,
         )
         missing = arn.replace(SECRET_ARN_NAME, "nope")
         rec = ServerRecord(
@@ -213,7 +234,10 @@ class TestCredentials:
         from tests.exchange.test_egress import claims
 
         creds = GatewayCredentials(
-            exchanger=world.exchanger, secrets=None, egress_base=egress_doc()
+            exchanger=world.exchanger,
+            secrets=None,
+            egress_base=egress_doc(),
+            authorities=AUTHORITIES,
         )  # type: ignore[arg-type]
         rec = ServerRecord(
             **{
@@ -231,7 +255,10 @@ class TestCredentials:
         from tests.exchange.test_egress import binding as make_binding
 
         creds = GatewayCredentials(
-            exchanger=world.exchanger, secrets=None, egress_base=egress_doc()
+            exchanger=world.exchanger,
+            secrets=None,
+            egress_base=egress_doc(),
+            authorities=AUTHORITIES,
         )  # type: ignore[arg-type]
         rec = ServerRecord(
             **{
@@ -317,6 +344,7 @@ def admin(rsa_key: RSAKey) -> tuple[TestClient, InMemoryServerStore]:
         store=store,
         fetch_tools=lambda r: TOOLS,
         scanner=LocalRulesScanner(),
+        audiences=frozenset(AUTHORITIES),
         resolver=lambda h, p: ["93.184.216.34"],
     )
     v = TokenValidator(
@@ -427,7 +455,10 @@ class TestStoreAndCredentialEdges:
 
     def test_none_mode_without_arn(self, world: World) -> None:
         creds = GatewayCredentials(
-            exchanger=world.exchanger, secrets=None, egress_base=egress_doc()
+            exchanger=world.exchanger,
+            secrets=None,
+            egress_base=egress_doc(),
+            authorities=AUTHORITIES,
         )  # type: ignore[arg-type]
         with pytest.raises(CredentialError):
             creds.server_secret(record("w", TOOLS))  # token-mode record: no secret_arn
@@ -436,7 +467,10 @@ class TestStoreAndCredentialEdges:
         from tests.exchange.test_egress import binding as make_binding
 
         creds = GatewayCredentials(
-            exchanger=world.exchanger, secrets=None, egress_base=egress_doc()
+            exchanger=world.exchanger,
+            secrets=None,
+            egress_base=egress_doc(),
+            authorities=AUTHORITIES,
         )  # type: ignore[arg-type]
         with pytest.raises(CredentialError):
             creds.delegated_token(
@@ -449,7 +483,10 @@ class TestStoreAndCredentialEdges:
         b = make_binding(world)
         world.endpoint.transport_failures = 10
         creds = GatewayCredentials(
-            exchanger=world.exchanger, secrets=None, egress_base=egress_doc()
+            exchanger=world.exchanger,
+            secrets=None,
+            egress_base=egress_doc(),
+            authorities=AUTHORITIES,
         )  # type: ignore[arg-type]
         rec = ServerRecord(
             **{
@@ -460,3 +497,43 @@ class TestStoreAndCredentialEdges:
         )
         with pytest.raises(CredentialError):
             creds.delegated_token(b, rec)
+
+
+@pytest.mark.security
+class TestAuthorities:
+    @staticmethod
+    def _a(**over: str) -> dict[str, str]:
+        a = {"issuer": "https://x", "token_endpoint": "https://x/t", "jwks_uri": "https://x/k"}
+        a.update(over)
+        return {k: v for k, v in a.items() if v != "DROP"}
+
+    @pytest.mark.parametrize(
+        "raw",
+        [
+            "{}",
+            "[]",
+            json.dumps({"api://a": _a(issuer="http://x")}),
+            json.dumps({"api://a": _a(jwks_uri="DROP")}),
+            json.dumps({"api://a": {**_a(), "extra": "1"}}),
+            '{"api://a": ' + json.dumps(_a()) + ', "api://a": ' + json.dumps(_a()) + "}",
+            "not json",
+        ],
+    )
+    def test_invalid_config(self, raw: str) -> None:
+        from atf_mcp_gateway.authorities import AuthorityConfigError, load_authorities
+
+        with pytest.raises(AuthorityConfigError):
+            load_authorities(raw)
+
+    def test_unmapped_audience_never_falls_back(self, world: World) -> None:
+        from tests.exchange.test_egress import binding as make_binding
+
+        creds = GatewayCredentials(
+            exchanger=world.exchanger,
+            secrets=None,
+            egress_base=egress_doc(),
+            authorities=AUTHORITIES,
+        )  # type: ignore[arg-type]
+        rec = ServerRecord(**{**record("kb", TOOLS).__dict__, "audience": "api://knowledge"})
+        with pytest.raises(CredentialError):
+            creds.delegated_token(make_binding(world), rec)

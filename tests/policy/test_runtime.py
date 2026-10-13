@@ -369,3 +369,41 @@ class TestPolicyFromEnv:
         )
         assert policy() is not None
         assert got == [("atf-bundles", "b.jws")]
+
+
+@pytest.mark.security
+class TestAuthorizeTool:
+    """ADR-0025 §4 amendment: request only user ∩ agent ∩ tool."""
+
+    def run(self, user_scopes: set[str], granted: set[str]) -> Any:
+        from trustkit_policy.runtime import authorize_tool
+
+        loaded = loaded_bundle(
+            make_grant(AGENT, ingress=ingress(), tools={"kb": ["kb.eng.read", "kb.public.read"]})
+        )
+        return authorize_tool(
+            loaded,
+            agent_id=AGENT,
+            user="bob",
+            user_scopes=frozenset(user_scopes),
+            server_id="kb",
+            delegation="token",
+            granted=frozenset(granted),
+        )
+
+    def test_narrowed_to_user(self) -> None:
+        d, requested = self.run({"kb.public.read"}, {"kb.eng.read", "kb.public.read"})
+        assert d.allowed
+        assert requested == frozenset({"kb.public.read"})
+
+    def test_nothing_in_common_denied_with_guardrail_named(self) -> None:
+        d, requested = self.run({"agent.invoke"}, {"kb.eng.read", "kb.public.read"})
+        assert (d.allowed, requested) == (False, frozenset())
+        assert d.policy_ids == ("guardrail:user-scopes",)
+
+    def test_empty_grant_denied(self) -> None:
+        assert self.run({"kb.public.read"}, set()) == (
+            self.run({"kb.public.read"}, set())[0],
+            frozenset(),
+        )
+        assert not self.run({"kb.public.read"}, set())[0].allowed

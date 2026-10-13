@@ -219,3 +219,19 @@ class TestEgressChains:
         hh, out = self.call(world, self.bundle(tools={}))
         assert denied_status(out) == 403
         assert hh.last_audit().reason == "policy_denied"
+
+
+@pytest.mark.security
+def test_tool_token_narrowed_to_users_entitlements(world: World) -> None:
+    """Grant and target offer read+write; alice holds only read: the token carries read only."""
+    hh = build(
+        world,
+        policy=lambda: egress_bundle(
+            alpha_grant(tools={"tickets": ["tickets.read", "tickets.write"]})
+        ),
+    )
+    out = hh.call(tool_call(mint_workload(world), mint_t2(world)), hh.ctx(arn=TOOLS_ARN))
+    req = out["mcp"]["transformedGatewayRequest"]
+    assert (
+        claims(req["headers"]["Authorization"].removeprefix("Bearer "))["scope"] == "tickets.read"
+    )

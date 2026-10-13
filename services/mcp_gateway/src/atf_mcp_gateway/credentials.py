@@ -8,6 +8,7 @@ import time
 from collections.abc import Callable, Mapping
 from typing import TYPE_CHECKING, Any, Final
 
+from atf_mcp_gateway.authorities import ToolAuthority
 from atf_mcp_gateway.servers import ServerRecord
 from trustkit.binding import ActorBinding
 from trustkit.exchange import ExchangeError, IdJagExchanger
@@ -38,9 +39,11 @@ class GatewayCredentials:
         exchanger: IdJagExchanger,
         secrets: SecretsManagerClient,
         egress_base: Mapping[str, Any],
+        authorities: Mapping[str, ToolAuthority],
         now: Callable[[], float] = time.monotonic,
     ) -> None:
         self._exchanger, self._secrets, self._base, self._now = exchanger, secrets, egress_base, now
+        self._authorities = authorities
         self._secret_cache: dict[str, tuple[str, float]] = {}
         self._profiles: dict[tuple[str, str, tuple[str, ...]], GatewayProfile] = {}
         self._lock = threading.Lock()
@@ -77,8 +80,17 @@ class GatewayCredentials:
         with self._lock:
             if key in self._profiles:
                 return self._profiles[key]
+        authority = self._authorities.get(record.audience)
+        if authority is None:  # enrolment refuses these; never fall back to a default AS
+            raise CredentialError("no token authority for this audience")
         doc = {
             **self._base,
+            "idp": {
+                **self._base["idp"],
+                "resource_issuer": authority.issuer,
+                "resource_token_endpoint": authority.token_endpoint,
+                "resource_jwks_uri": authority.jwks_uri,
+            },
             "server_id": record.server_id,
             "target": {"audience": record.audience, "scopes": sorted(record.scopes)},
         }

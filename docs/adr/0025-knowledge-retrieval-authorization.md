@@ -60,6 +60,23 @@
    - In AWS: Bedrock Knowledge Bases `Retrieve`, with our filter translated to its metadata
      filter syntax, tested with Stubber (ED-13). A-3 is verified in Phase 6.
 
+## Amendments made during 5b (2026-10-13)
+
+8. **Token authority allowlist (amends ADR-0017/0018).**
+   - The MCP gateway config maps each permitted delegated-token audience to its AS
+     (`ATF_TOOL_AUTHORITIES_PATH`).
+   - Enrolment refuses any other audience, and each server's exchange uses its mapped AS, with
+     no fallback.
+   - Every tool keeps its own audience: no cross-tool token replay, and no admin-chosen AS. The
+     knowledge server has its own `knowledge` AS (`api://knowledge`).
+
+9. **Least-privilege narrowing at both tool paths** (`trustkit_policy.runtime.authorize_tool`).
+   - Requested scopes = grant ∩ server scopes ∩ **the user's T2 scopes**; an empty result is a
+     deny.
+   - On a full denial Cedar is still asked about the full grant, so the user-scope guardrail
+     names itself in the audit trail.
+   - A partially entitled user (bob: `kb.public.read` only) is narrowed rather than refused.
+
 ## Consequences
 
 - Knowledge access gets the same identity, delegation and audit story as tools, with no new

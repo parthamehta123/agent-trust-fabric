@@ -401,3 +401,34 @@ def document_decision(
         if not d.allowed:
             return PolicyDecision(allowed=False, policy_ids=tuple(sorted(set(ids))))
     return PolicyDecision(allowed=True, policy_ids=tuple(sorted(set(ids))))
+
+
+def authorize_tool(
+    loaded: LoadedBundle,
+    *,
+    agent_id: str,
+    user: str,
+    user_scopes: frozenset[str],
+    server_id: str,
+    delegation: str,
+    granted: frozenset[str],
+    chain: tuple[str, ...] = (),
+) -> tuple[PolicyDecision, frozenset[str]]:
+    """Least-privilege tool authorization (ADR-0025 §4 amendment): request only
+    ``granted ∩ user_scopes`` and let Cedar decide on exactly that. Returns the decision and the
+    scopes to request (empty when denied). If the user holds none of the granted scopes, Cedar is
+    asked about the full grant so the user-scope guardrail names itself in the audit trail."""
+    narrowed = granted & user_scopes
+    decision = tool_decision(
+        loaded,
+        agent_id=agent_id,
+        user=user,
+        user_scopes=user_scopes,
+        server_id=server_id,
+        delegation=delegation,
+        requested=narrowed or granted,
+        chain=chain,
+    )
+    if not narrowed or not decision.allowed:
+        return PolicyDecision(False, decision.policy_ids, decision.errored), frozenset()
+    return decision, narrowed

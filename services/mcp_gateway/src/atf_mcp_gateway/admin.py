@@ -86,10 +86,13 @@ class AdminService:
         store: ServerStore,
         fetch_tools: FetchTools,
         scanner: ContentScanner,
+        audiences: frozenset[str],
         resolver: Resolver = default_resolver,
         allow: frozenset[Network] = frozenset(),
     ) -> None:
-        self._allow = allow
+        """``audiences``: delegated-token audiences with a configured authority. Token-mode
+        enrolment for any other audience is refused (no arbitrary AS, no cross-tool replay)."""
+        self._allow, self._audiences = allow, audiences
         self._store, self._fetch, self._scanner, self._resolver = (
             store,
             fetch_tools,
@@ -114,7 +117,12 @@ class AdminService:
         if not scopes or not all(_SCOPE.fullmatch(s) for s in scopes):
             raise AdminError(AdminFailure.INVALID, "scopes must be explicit, without wildcards")
         if delegation is Delegation.TOKEN:
-            if audience is None or not _AUDIENCE.fullmatch(audience) or secret_arn is not None:
+            if (
+                audience is None
+                or not _AUDIENCE.fullmatch(audience)
+                or audience not in self._audiences
+                or secret_arn is not None
+            ):
                 raise AdminError(
                     AdminFailure.INVALID, "token delegation needs an audience, no secret"
                 )

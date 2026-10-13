@@ -19,6 +19,7 @@ output, and every decision emits exactly one audit event.
 from __future__ import annotations
 
 import contextlib
+import dataclasses
 import re
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
@@ -65,7 +66,7 @@ from trustkit.scanning import (
     scan_with_policy,
 )
 from trustkit_policy.bundle import LoadedBundle
-from trustkit_policy.runtime import actor_policies_from_bundle, tool_decision, user_scopes
+from trustkit_policy.runtime import actor_policies_from_bundle, authorize_tool, user_scopes
 
 RESERVED_HEADERS: Final = tuple(sorted(policy.RESERVED_HEADERS))
 """Always set on every forwarded request (ADR-0012 §4). Advisory only: runtimes trust T2 claims."""
@@ -378,19 +379,20 @@ def _decide_egress_request(
         actor_jti_sha256=jti_hash(binding.workload.jti),
         actor_chain=binding.prior_actors,
     )
-    decision = tool_decision(
+    decision, requested = authorize_tool(
         loaded,
         agent_id=binding.agent_client_id,
         user=binding.subject,
         user_scopes=user_scopes(binding.subject_token),
         server_id=server_id,
         delegation="token",
-        requested=binding.allowed_scopes,
+        granted=binding.allowed_scopes,
         chain=binding.prior_actors,
     )
     call.fields["policy_ids"] = decision.policy_ids
     if not decision.allowed:
         raise _Deny(403, "policy_denied")
+    binding = dataclasses.replace(binding, allowed_scopes=requested)  # user ∩ agent ∩ target
     call.check_deadline()
 
     try:

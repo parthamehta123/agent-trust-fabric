@@ -37,6 +37,7 @@ x-mcp-env: &mcp-env
   ATF_CA_BUNDLE: /run/certs/ca.pem
   ATF_DDB_TABLE: mcp-servers
   ATF_EGRESS_PROFILE_PATH: /run/config/mcp-egress.json
+  ATF_TOOL_AUTHORITIES_PATH: /run/config/tool-authorities.json
   ATF_LOCAL_KEYS_DIR: /run/keys
   ATF_SSRF_ALLOW_CIDRS: 10.230.0.0/16
   AWS_REGION: us-east-1
@@ -66,7 +67,7 @@ services:
       - ./.local-ca/mock-idp.key:/run/certs/tls.key:ro
       - ./.local-ca/mock-idp-topology.json:/run/config/mock-idp-topology.json:ro
     ports: ["127.0.0.1:9443:8443"]
-    networks: [edge, idp, idp-admin, idp-registry, idp-beta]
+    networks: [edge, idp, idp-admin, idp-registry, idp-beta, idp-kb]
     healthcheck: *tls-healthcheck
 
   interceptor:
@@ -180,6 +181,7 @@ services:
       - ./.local-ca/mcp-gateway.pem:/run/certs/tls.pem:ro
       - ./.local-ca/mcp-gateway.key:/run/certs/tls.key:ro
       - ./.local-ca/mcp-egress.json:/run/config/mcp-egress.json:ro
+      - ./.local-ca/tool-authorities.json:/run/config/tool-authorities.json:ro
       - ./.local-ca/client-keys/gateway.pem:/run/keys/gateway.pem:ro
       - ./.local-ca/bundle-key.jwk:/run/config/bundle-key.jwk:ro
       - ./.local-ca/bundles:/run/bundles:ro
@@ -205,6 +207,7 @@ services:
       - ./.local-ca/ca.pem:/run/certs/ca.pem:ro
       - ./.local-ca/mcp-admin.pem:/run/certs/tls.pem:ro
       - ./.local-ca/mcp-admin.key:/run/certs/tls.key:ro
+      - ./.local-ca/tool-authorities.json:/run/config/tool-authorities.json:ro
     ports: ["127.0.0.1:9445:8443"]
     networks: [admin-edge, ddb-admin, tools-admin, idp-admin]
     depends_on:
@@ -399,6 +402,39 @@ services:
       bundle-publisher: { condition: service_healthy }
     healthcheck: *tls-healthcheck
 
+  # ---------------------------------------------------------------- Knowledge (ADR-0025)
+  # An MCP server like any tool: reached only via the MCP gateway (tools networks, FQDN alias for
+  # SSRF vetting); its own IdP network for JWKS; index and bundles mounted read-only.
+
+  knowledge-server:
+    <<: *hardening
+    build: { context: ., dockerfile: deploy/local/service.Dockerfile, args: { SERVICE: atf-knowledge-server } }
+    command: ["atf_knowledge_server.app:app_from_env"]
+    environment:
+      <<: *bundle-env
+      ATF_KB_ISSUER: https://mock-idp:8443/oauth2/knowledge
+      ATF_KB_AUDIENCE: api://knowledge
+      ATF_KB_JWKS_URI: https://mock-idp:8443/oauth2/knowledge/v1/keys
+      ATF_KB_INDEX_PATH: /run/kb/index.jsonl
+      ATF_CA_BUNDLE: /run/certs/ca.pem
+    volumes:
+      - ./.local-ca/ca.pem:/run/certs/ca.pem:ro
+      - ./.local-ca/knowledge-server.pem:/run/certs/tls.pem:ro
+      - ./.local-ca/knowledge-server.key:/run/certs/tls.key:ro
+      - ./.local-ca/bundle-key.jwk:/run/config/bundle-key.jwk:ro
+      - ./.local-ca/bundles:/run/bundles:ro
+      - ./.local-ca/kb:/run/kb:ro
+    networks:
+      tools-data: { aliases: [knowledge.tools.internal] }
+      tools-admin: { aliases: [knowledge.tools.internal] }
+      idp-kb: {}
+    depends_on:
+      mock-idp: { condition: service_healthy }
+      bundle-publisher: { condition: service_healthy }
+    healthcheck:
+      <<: *tls-healthcheck
+      test: ["CMD", "python", "-c", "import ssl,urllib.request as u; u.urlopen('https://knowledge-server:8443/ping', context=ssl.create_default_context(cafile='/run/certs/ca.pem'), timeout=2)"]
+
 networks:
   edge: {}
   core: { internal: true }
@@ -422,3 +458,4 @@ networks:
   a2a-edge: {}
   a2a-agents: { internal: true, ipam: { config: [{ subnet: 10.232.0.0/16 }] } }
   idp-beta: { internal: true }
+  idp-kb: { internal: true }

@@ -23,6 +23,9 @@ MCP_SERVER_ID = f"tickets-{uuid.uuid4().hex[:8]}"
 A2A_SERVER_ID = f"tickets-a2a-{uuid.uuid4().hex[:8]}"
 """Enrolled by the A2A suite; granted to *both* agents (no amplification, ADR-0024 §3)."""
 BETA = "0oa-agent-beta"
+KB_SERVER_ID = f"kb-{uuid.uuid4().hex[:8]}"
+"""The knowledge server's enrolment (knowledge suite); its tool scopes are granted to alpha."""
+KB_SCOPES = ["kb.eng.read", "kb.hr.read", "kb.public.read"]
 IDP_CONFIGURED = "https://mock-idp:8443"
 
 
@@ -58,7 +61,13 @@ def alpha_spec(**over: Any) -> dict[str, Any]:
             "t2_audience": "api://agent-alpha",
             "t2_jwks_uri": f"{IDP_CONFIGURED}/oauth2/agent-alpha/v1/keys",
         },
-        "tools": {MCP_SERVER_ID: ["tickets.read"], A2A_SERVER_ID: ["tickets.read"]},
+        "tools": {
+            MCP_SERVER_ID: ["tickets.read"],
+            A2A_SERVER_ID: ["tickets.read"],
+            KB_SERVER_ID: KB_SCOPES,
+        },
+        # ADR-0025: what alpha may retrieve, independent of the user's own entitlements.
+        "knowledge": {"collections": ["eng", "public"], "max_classification": "internal"},
         "models": {"claude-sonnet": {"daily_token_budget": 20000, "max_output_tokens": 256}},
         "delegation": {"may_delegate_to": [BETA]},
     }

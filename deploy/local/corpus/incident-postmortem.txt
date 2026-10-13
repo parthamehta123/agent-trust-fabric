@@ -1,0 +1,3 @@
+The outage postmortem: the release pipeline skipped canary analysis for one deploy.
+
+Remediation: canary is now mandatory.

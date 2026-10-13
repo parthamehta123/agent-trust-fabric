@@ -212,7 +212,7 @@ class TestPhase4Material:
         assert (result.out_dir / "bundles").is_dir()
         topo = json.loads(result.topology.read_text())
         agent_as = next(s for s in topo["authorization_servers"] if s["as_id"] == "agent-alpha")
-        assert agent_as["restricted_scopes"] == {"tickets.read": ["00u-alice"]}
+        assert agent_as["restricted_scopes"]["tickets.read"] == ["00u-alice"]
         idp = build_idp_from_topology(topo, base_url=BASE)
         assert idp.issuer("registry") == f"{BASE}/oauth2/registry"
 
@@ -223,7 +223,7 @@ class TestPhase4cMaterial:
         beta = next(s for s in topo["authorization_servers"] if s["as_id"] == "agent-beta")
         assert beta["clients"] == ["0oa-a2a-gateway"]
         assert beta["agent_client_id"] == "0oa-agent-beta"
-        assert beta["restricted_scopes"] == {"tickets.read": ["00u-alice"]}
+        assert beta["restricted_scopes"]["tickets.read"] == ["00u-alice"]
 
     def test_a2a_egress_base_is_a_valid_profile(self, result: BootstrapResult) -> None:
         doc = json.loads((result.out_dir / "a2a-egress.json").read_text())
@@ -258,3 +258,25 @@ class TestPhase4cMaterial:
             "agent-beta.agents.internal",
             "agent-beta",
         ]
+
+
+class TestPhase5Material:
+    def test_tool_authorities(self, result: BootstrapResult) -> None:
+        from atf_mcp_gateway.authorities import load_authorities
+
+        auth = load_authorities((result.out_dir / "tool-authorities.json").read_bytes())
+        assert set(auth) == {"api://tool-tickets", "api://knowledge"}
+        assert auth["api://knowledge"].issuer == f"{BASE}/oauth2/knowledge"
+
+    def test_kb_entitlements(self, result: BootstrapResult) -> None:
+        topo = json.loads(result.topology.read_text())
+        alpha = next(s for s in topo["authorization_servers"] if s["as_id"] == "agent-alpha")
+        assert alpha["restricted_scopes"]["kb.hr.read"] == ["00u-alice"]
+        assert "kb.public.read" not in alpha["restricted_scopes"]  # open to every user
+        kb = next(s for s in topo["authorization_servers"] if s["as_id"] == "knowledge")
+        assert (kb["resource_audience"], kb["clients"]) == ("api://knowledge", ["0oa-tool-gateway"])
+
+    def test_knowledge_cert_fqdn(self, result: BootstrapResult) -> None:
+        leaf = cert(result.service_certs["knowledge-server"][0])
+        sans = leaf.extensions.get_extension_for_class(x509.SubjectAlternativeName).value
+        assert sans.get_values_for_type(x509.DNSName)[0] == "knowledge.tools.internal"

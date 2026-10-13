@@ -106,7 +106,8 @@ def t2_for(http: httpx.Client, user: str = "00u-alice") -> str:
             "subject_token": login["id_token"],
             "subject_token_type": "urn:ietf:params:oauth:token-type:id_token",
             "audience": f"{IDP_CONFIGURED}/oauth2/agent-alpha",
-            "scope": "agent.invoke tickets.read",
+            # Request every delegable scope; the IdP downscopes per user (ADR-0023/0025).
+            "scope": "agent.invoke tickets.read kb.eng.read kb.hr.read kb.public.read",
         },
     )
     return token(
@@ -189,7 +190,8 @@ class TestMcpEndToEnd:
         r = agent_call(http, call, user="00u-bob")
         assert r["error"]["message"] == "unknown tool"  # indistinguishable from a missing tool
         listing = agent_call(http, {"jsonrpc": "2.0", "id": 4, "method": "tools/list"}, "00u-bob")
-        assert listing["result"]["tools"] == []
+        names = {t["name"] for t in listing["result"]["tools"]}
+        assert f"{server_id}__get_ticket" not in names  # hidden: same as not existing
 
     @pytest.mark.security
     def test_unbound_agent_is_401(self, http: httpx.Client, server_id: str) -> None:

@@ -1,0 +1,3 @@
+Deploys go through the release pipeline with canary analysis.
+
+Rollbacks redeploy the previous artefact from the release pipeline.

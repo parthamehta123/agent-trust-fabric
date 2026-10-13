@@ -3,12 +3,17 @@ SHELL := /bin/bash
 export ATF_UID := $(shell id -u)
 export ATF_GID := $(shell id -g)
 PACKAGES := mock-idp gateway-emulator atf-agent-runtime atf-interceptor atf-mcp-gateway mock-mcp \
-            atf-inference-gateway mock-llm atf-agent-registry atf-a2a-gateway
+            atf-inference-gateway mock-llm atf-agent-registry atf-a2a-gateway \
+            atf-knowledge-server
 
-.PHONY: certs wheels up e2e logs-scan down clean
+.PHONY: certs kb-index wheels up e2e logs-scan down clean
 
 certs:  ## ephemeral CA, service certs, client key, configs -> .local-ca/ (gitignored)
 	uv run python -m devstack.bootstrap --out .local-ca
+
+kb-index: certs  ## ingest the sample corpus (ADR-0025 §5): any rejected document fails the build
+	uv run python -m atf_knowledge_server.ingest --corpus deploy/local/corpus \
+	  --config deploy/local/kb-collections.json --out .local-ca/kb/index.jsonl --ingested-by devstack
 
 # Least privilege: each image gets only the first-party wheels it imports (never devstack).
 WHEELS_mock-idp := mock_idp
@@ -20,6 +25,7 @@ WHEELS_mock-mcp := mock_mcp
 WHEELS_atf-inference-gateway := atf_inference_gateway trustkit trustkit_http trustkit_aws trustkit_policy
 WHEELS_atf-agent-registry := atf_agent_registry trustkit trustkit_http trustkit_aws trustkit_policy
 WHEELS_atf-a2a-gateway := atf_a2a_gateway trustkit trustkit_http trustkit_aws trustkit_policy
+WHEELS_atf-knowledge-server := atf_knowledge_server trustkit trustkit_http trustkit_aws trustkit_policy
 WHEELS_mock-llm := mock_llm
 
 wheels:  ## hash-pinned requirements + per-service first-party wheels -> build/
@@ -30,7 +36,7 @@ wheels:  ## hash-pinned requirements + per-service first-party wheels -> build/
 	done
 	$(foreach p,$(PACKAGES),mkdir -p build/wheels/$(p) && $(foreach w,$(WHEELS_$(p)),cp build/dist/$(w)-*.whl build/wheels/$(p)/ &&) true;)
 
-up: certs wheels  ## build images and start the stack (waits for health)
+up: certs kb-index wheels  ## build images and start the stack (waits for health)
 	docker compose up -d --build --wait
 
 e2e:  ## run the HTTPS e2e suite against the running stack

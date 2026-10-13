@@ -6,19 +6,21 @@ Identity, authorization and governance plane for AI agents:
 - **Egress:** agent → tools (MCP), models (LiteLLM → Bedrock) and knowledge (Bedrock KB).
 - **Control plane:** an agent registry with security identity records and approval workflow.
 
-> **Status: Phase 4 complete.** Every gateway enforces a **signed policy bundle** built from an
-> approved agent registry, including **agent-to-agent delegation**:
+> **Status: Phase 5 complete.** Every gateway enforces a **signed policy bundle** built from an
+> approved agent registry:
 > - registry (two-person, tiered approval; security sign-off for new delegation edges) →
 >   separate bundle publisher (the only signing key) → ingress interceptor, MCP gateway,
->   inference gateway and A2A gateway, each running Cedar before acting;
+>   inference gateway, A2A gateway and knowledge server, each running Cedar before acting;
 > - user → agent A → agent B → tool works end to end with nested `act` tokens, capped at two
->   actors, both-sides edges, and **no amplification** (every actor must hold the grant);
-> - user entitlements ride in T2 (IdP downscoping) and are enforced by a Cedar guardrail;
-> - revocation reaches every gateway in seconds, rollback replays are rejected, and a dead
->   publisher fails everything closed.
+>   actors, both-sides edges, and **no amplification**;
+> - **retrieval-time authorization**: a server-side filter (user ∩ every agent's collections,
+>   lowest ceiling) plus a per-chunk Cedar re-check; poisoned documents are refused at
+>   ingestion;
+> - requests are narrowed to user ∩ agent ∩ tool scopes; revocation reaches every gateway in
+>   seconds; a dead publisher fails everything closed.
 >
-> Nothing is deployed to AWS yet. Real-AWS verification items are tracked as A-1b/A-5/A-6/A-7
-> and ED-1..12.
+> Nothing is deployed to AWS yet. Real-AWS verification items are tracked as A-1b/A-3/A-5/A-6/A-7
+> and ED-1..13.
 
 ## Documents
 
@@ -45,6 +47,8 @@ Identity, authorization and governance plane for AI agents:
 | `services/inference_gateway` | Model gateway embedding the LiteLLM SDK |
 | `services/agent_registry` | Agent registry: versioned security records with tiered approval |
 | `services/a2a_gateway` | Agent-to-agent gateway: delegated tokens, Cedar `delegate`, Agent Cards |
+| `services/knowledge_server` | Knowledge base (MCP server): ingestion, retrieval-time authorization, Bedrock KB adapter |
+| `deploy/local/corpus*` | Sample labelled corpus, plus a poisoned one that ingestion must refuse |
 | `packages/mock_mcp`, `packages/mock_llm` | Test-only MCP tool server and OpenAI-compatible model server |
 | `packages/devstack` | Dev-only ephemeral CA, certs, keys and config generator |
 | `deploy/local`, `compose.yaml`, `Makefile` | Hardened local container stack |

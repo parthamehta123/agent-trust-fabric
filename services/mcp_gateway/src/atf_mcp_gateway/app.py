@@ -114,9 +114,9 @@ def bundle_binder(
 def bundle_authorizer(
     policy: Callable[[], LoadedBundle | None], now: Callable[[], int]
 ) -> Authorizer:
-    """Requested = grant.tools[server] ∩ record.scopes; Cedar ``invoke_tool`` must allow it with
-    the record's delegation mode and the user's T2 scopes. Anything else -> ``None`` (deny)."""
-    from trustkit_policy.runtime import tool_decision, user_scopes
+    """Requested = grant.tools[server] ∩ record.scopes ∩ the user's T2 scopes; Cedar
+    ``invoke_tool`` must allow exactly that. Anything else -> ``None`` (deny)."""
+    from trustkit_policy.runtime import authorize_tool, user_scopes
 
     def authorize(binding: ActorBinding, record: ServerRecord) -> frozenset[str] | None:
         loaded = policy()  # re-read per call: a revocation since binding takes effect now
@@ -125,15 +125,14 @@ def bundle_authorizer(
         grant = loaded.grant(binding.agent_client_id, now())
         if grant is None:
             return None
-        requested = grant.tools.get(record.server_id, frozenset()) & record.scopes
-        decision = tool_decision(
+        decision, requested = authorize_tool(
             loaded,
             agent_id=binding.agent_client_id,
             user=binding.subject,
             user_scopes=user_scopes(binding.subject_token),
             server_id=record.server_id,
             delegation=record.delegation.value,
-            requested=requested,
+            granted=grant.tools.get(record.server_id, frozenset()) & record.scopes,
             chain=binding.prior_actors,  # every actor and edge re-checked (no amplification)
         )
         return requested if decision.allowed else None
@@ -303,6 +302,8 @@ def create_admin_app(admin: AdminService, admin_validator: TokenValidator) -> Fa
 
 def _common(env: Mapping[str, str]) -> dict[str, Any]:
     """Shared wiring. Required variables are read up front: a missing one fails cold start."""
+    import pathlib
+
     import boto3
 
     from atf_mcp_gateway.store_dynamo import DynamoServerStore
@@ -316,6 +317,9 @@ def _common(env: Mapping[str, str]) -> dict[str, Any]:
         env.get("AWS_REGION", "us-east-1"),
     )
     allow = parse_local_allowlist(env)  # raises outside ATF_ENV=local (ADR-0018 §1)
+    from atf_mcp_gateway.authorities import load_authorities
+
+    authorities = load_authorities(pathlib.Path(env["ATF_TOOL_AUTHORITIES_PATH"]).read_bytes())
     http = HttpxTokenEndpoint(ca_bundle_path=ca)
     resolvers: dict[str, KeyResolver] = {}
 
@@ -335,6 +339,7 @@ def _common(env: Mapping[str, str]) -> dict[str, Any]:
         "store": DynamoServerStore(ddb, table),
         "upstream": PinnedClient(ca_bundle_path=ca, allow=allow),
         "region": region,
+        "authorities": authorities,
     }
 
 
@@ -370,6 +375,7 @@ def build_data_app(env: Mapping[str, str]) -> FastAPI:
         exchanger=exchanger,
         secrets=boto3.client("secretsmanager", region_name=c["region"]),
         egress_base=egress_doc,
+        authorities=c["authorities"],
     )
     policy = policy_from_env(
         env,
@@ -414,7 +420,11 @@ def build_admin_app(env: Mapping[str, str]) -> FastAPI:
         return result
 
     admin = AdminService(
-        store=c["store"], fetch_tools=fetch_tools, scanner=LocalRulesScanner(), allow=c["allow"]
+        store=c["store"],
+        fetch_tools=fetch_tools,
+        scanner=LocalRulesScanner(),
+        audiences=frozenset(c["authorities"]),
+        allow=c["allow"],
     )
     return create_admin_app(admin, validator)
 

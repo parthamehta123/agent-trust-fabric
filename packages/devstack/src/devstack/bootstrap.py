@@ -83,6 +83,17 @@ AGENT_BETA: Final = "agent-beta"
 AGENT_BETA_AUDIENCE: Final = "api://agent-beta"
 AGENT_BETA_CLIENT_ID: Final = "0oa-agent-beta"
 A2A_CLIENT_ID: Final = "0oa-a2a-gateway"
+KNOWLEDGE_AS: Final = "knowledge"
+KNOWLEDGE_AUDIENCE: Final = "api://knowledge"
+KNOWLEDGE_HOST: Final = "knowledge.tools.internal"
+KB_SCOPES: Final = ("kb.eng.read", "kb.hr.read", "kb.public.read")
+USER_ENTITLEMENTS: Final = {
+    # ADR-0023/0025: restricted delegated scopes and the users entitled to them. Unlisted
+    # scopes (kb.public.read, agent.invoke) are open to every user.
+    "tickets.read": list(ENTITLED_USERS),
+    "kb.eng.read": list(ENTITLED_USERS),
+    "kb.hr.read": list(ENTITLED_USERS),
+}
 
 # key file name -> client id
 CLIENT_KEYS: Final = {
@@ -111,6 +122,7 @@ DEFAULT_SERVICES: Final = (
     Service("a2a-gateway", ("a2a-gateway", "localhost")),
     # FQDN for the A2A gateway (SSRF vetting requires one); bare name for its own healthcheck.
     Service("agent-beta", ("agent-beta.agents.internal", "agent-beta")),
+    Service("knowledge-server", (KNOWLEDGE_HOST, "knowledge-server")),
 )
 
 
@@ -208,6 +220,9 @@ def bootstrap(
     _write(out_dir / "inference-profile.json", _json(_inference_profile(base)), 0o644)
     _write(out_dir / "model-routes.json", _json(_model_routes()), 0o644)
     _write(out_dir / "a2a-egress.json", _json(_a2a_egress(base)), 0o644)
+    _write(out_dir / "tool-authorities.json", _json(_tool_authorities(base)), 0o644)
+    kb_dir = out_dir / "kb"  # the ingest step writes the index here (make kb-index)
+    kb_dir.mkdir(mode=0o755, exist_ok=True)
 
     # Bundle signing key (ADR-0022 §7): only the publisher mounts this directory; gateways get
     # the public JWK. Never under client-keys/ (which other containers mount files from).
@@ -286,7 +301,7 @@ def _topology(base: str, jwks: Mapping[str, Mapping[str, str]]) -> dict[str, Any
                 "resource_audience": AGENT_AUDIENCE,
                 "clients": [FRONTEND_CLIENT_ID],
                 "agent_client_id": AGENT_CLIENT_ID,
-                "restricted_scopes": {"tickets.read": list(ENTITLED_USERS)},
+                "restricted_scopes": USER_ENTITLEMENTS,
             },
             {
                 # Agent B's own AS: only the A2A gateway may exchange here (ADR-0024 §1).
@@ -294,7 +309,7 @@ def _topology(base: str, jwks: Mapping[str, Mapping[str, str]]) -> dict[str, Any
                 "resource_audience": AGENT_BETA_AUDIENCE,
                 "clients": [A2A_CLIENT_ID],
                 "agent_client_id": AGENT_BETA_CLIENT_ID,
-                "restricted_scopes": {"tickets.read": list(ENTITLED_USERS)},
+                "restricted_scopes": USER_ENTITLEMENTS,
             },
             {
                 "as_id": REGISTRY_AS,
@@ -312,6 +327,11 @@ def _topology(base: str, jwks: Mapping[str, Mapping[str, str]]) -> dict[str, Any
                 "clients": [AGENT_CLIENT_ID],
             },
             {
+                "as_id": KNOWLEDGE_AS,
+                "resource_audience": KNOWLEDGE_AUDIENCE,
+                "clients": [TOOL_GATEWAY_CLIENT_ID],
+            },
+            {
                 "as_id": TOOL_AS,
                 "resource_audience": TOOL_AUDIENCE,
                 "clients": [TOOL_GATEWAY_CLIENT_ID],
@@ -324,7 +344,8 @@ def _topology(base: str, jwks: Mapping[str, Mapping[str, str]]) -> dict[str, Any
         ],
         "clients": [
             client(
-                FRONTEND_CLIENT_ID, {f"{base}/oauth2/{AGENT}": ["agent.invoke", "tickets.read"]}
+                FRONTEND_CLIENT_ID,
+                {f"{base}/oauth2/{AGENT}": ["agent.invoke", "tickets.read", *KB_SCOPES]},
             ),
             client(
                 AGENT_CLIENT_ID,
@@ -333,11 +354,17 @@ def _topology(base: str, jwks: Mapping[str, Mapping[str, str]]) -> dict[str, Any
                     f"{base}/oauth2/{INFERENCE_AS}": ["inference.invoke"],
                 },
             ),
-            client(TOOL_GATEWAY_CLIENT_ID, {f"{base}/oauth2/{TOOL_AS}": ["tickets.read"]}),
+            client(
+                TOOL_GATEWAY_CLIENT_ID,
+                {
+                    f"{base}/oauth2/{TOOL_AS}": ["tickets.read"],
+                    f"{base}/oauth2/{KNOWLEDGE_AS}": list(KB_SCOPES),
+                },
+            ),
             client(AGENT_BETA_CLIENT_ID, {f"{base}/oauth2/{WORKLOAD_AS}": ["tools.invoke"]}),
             client(
                 A2A_CLIENT_ID,
-                {f"{base}/oauth2/{AGENT_BETA}": ["agent.invoke", "tickets.read"]},
+                {f"{base}/oauth2/{AGENT_BETA}": ["agent.invoke", "tickets.read", *KB_SCOPES]},
             ),
             *(
                 client(cid, {f"{base}/oauth2/{ADMIN_AS}": ["mcp.admin"]})
@@ -403,6 +430,20 @@ def _model_routes() -> dict[str, Any]:
     }
 
 
+def _tool_authorities(base: str) -> dict[str, Any]:
+    """Delegated-token audience -> its AS (ADR-0025 §4): every tool keeps its own audience."""
+
+    def authority(as_id: str) -> dict[str, str]:
+        issuer = f"{base}/oauth2/{as_id}"
+        return {
+            "issuer": issuer,
+            "token_endpoint": f"{issuer}/v1/token",
+            "jwks_uri": f"{issuer}/v1/keys",
+        }
+
+    return {TOOL_AUDIENCE: authority(TOOL_AS), KNOWLEDGE_AUDIENCE: authority(KNOWLEDGE_AS)}
+
+
 def _a2a_egress(base: str) -> dict[str, Any]:
     """A2A gateway egress base (ADR-0024 §1). ``idp.resource_*``, ``target`` and ``server_id``
     are replaced per target agent from its signed grant; the values here only satisfy the
@@ -447,7 +488,10 @@ def _profiles(base: str) -> dict[str, Any]:
                     "resource_jwks_uri": f"{base}/oauth2/{AGENT}/v1/keys",
                 },
                 # Downstream scopes the agent may use for the user; the IdP downscopes per user.
-                "target": {"audience": AGENT_AUDIENCE, "scopes": ["agent.invoke", "tickets.read"]},
+                "target": {
+                    "audience": AGENT_AUDIENCE,
+                    "scopes": ["agent.invoke", "tickets.read", *KB_SCOPES],
+                },
                 "ingress_clients": {FRONTEND_CLIENT_ID: f"local:{FRONTEND_KEY_NAME}"},
                 "max_auth_age_s": 43_200,
                 "ingress_token": {

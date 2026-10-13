@@ -34,6 +34,7 @@ class Fixture:
             store=self.store,
             fetch_tools=lambda record: self.tools,
             scanner=LocalRulesScanner(),
+            audiences=frozenset({"api://tool-tickets"}),
             resolver=lambda h, p: ["93.184.216.34"],
         )
 
@@ -206,3 +207,19 @@ class TestRejects:
 
     def test_unknown_server(self, f: Fixture) -> None:
         fails(AdminFailure.NOT_FOUND, f.svc.refresh, ALICE, "nope")
+
+
+@pytest.mark.security
+def test_enrolment_refuses_audience_without_authority() -> None:
+    """ADR-0025 §4: no arbitrary AS, no cross-tool replay via a borrowed audience."""
+    f = Fixture()
+    with pytest.raises(AdminError) as e:
+        f.svc.enroll(
+            ALICE,
+            server_id="kb",
+            url=URL,
+            delegation=Delegation.TOKEN,
+            audience="api://knowledge",
+            scopes=frozenset({"kb.eng.read"}),
+        )
+    assert e.value.failure is AdminFailure.INVALID
