@@ -133,6 +133,8 @@ class TestPhase3Material:
             "reg-dave",
             "reg-bob",
             "reg-carol",
+            "agent-beta",
+            "a2a-gateway",
         }
         doc = json.loads((result.out_dir / "mcp-egress.json").read_text())
         assert "agents" not in doc  # ADR-0022: grants come from the bundle
@@ -213,3 +215,46 @@ class TestPhase4Material:
         assert agent_as["restricted_scopes"] == {"tickets.read": ["00u-alice"]}
         idp = build_idp_from_topology(topo, base_url=BASE)
         assert idp.issuer("registry") == f"{BASE}/oauth2/registry"
+
+
+class TestPhase4cMaterial:
+    def test_agent_beta_as_only_a2a_gateway_exchanges(self, result: BootstrapResult) -> None:
+        topo = json.loads(result.topology.read_text())
+        beta = next(s for s in topo["authorization_servers"] if s["as_id"] == "agent-beta")
+        assert beta["clients"] == ["0oa-a2a-gateway"]
+        assert beta["agent_client_id"] == "0oa-agent-beta"
+        assert beta["restricted_scopes"] == {"tickets.read": ["00u-alice"]}
+
+    def test_a2a_egress_base_is_a_valid_profile(self, result: BootstrapResult) -> None:
+        doc = json.loads((result.out_dir / "a2a-egress.json").read_text())
+        reg = load_profiles(
+            json.dumps(
+                {
+                    "version": 1,
+                    "profiles": [
+                        {
+                            **doc,
+                            "target": {"audience": "api://agent-beta", "scopes": ["agent.invoke"]},
+                            "server_id": "a2a-target",
+                        }
+                    ],
+                }
+            )
+        )
+        assert reg.rejected == {}
+        assert doc["client"] == {"client_id": "0oa-a2a-gateway", "signing_key": "local:a2a-gateway"}
+
+    def test_beta_workload_client(self, result: BootstrapResult) -> None:
+        topo = json.loads(result.topology.read_text())
+        wl = next(s for s in topo["authorization_servers"] if s["as_id"] == "workload")
+        assert "0oa-agent-beta" in wl["clients"]
+        idp = build_idp_from_topology(topo, base_url=BASE)
+        assert idp.issuer("agent-beta") == f"{BASE}/oauth2/agent-beta"
+
+    def test_beta_cert_has_fqdn_and_no_localhost(self, result: BootstrapResult) -> None:
+        leaf = cert(result.service_certs["agent-beta"][0])
+        sans = leaf.extensions.get_extension_for_class(x509.SubjectAlternativeName).value
+        assert sans.get_values_for_type(x509.DNSName) == [
+            "agent-beta.agents.internal",
+            "agent-beta",
+        ]

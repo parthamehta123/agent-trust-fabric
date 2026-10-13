@@ -71,6 +71,12 @@ agent B ──(workload_B + T_B)──▶ tool gateway ──exchange @ tool AS�
   `act` was silently ignored (TM-A2A-05).
 - The broker audits an allowed delegation **before** minting B's token; if the audit write
   fails, nothing is minted or forwarded (503).
+- Runtime endpoints in cards must be **fully qualified** hostnames: the shared SSRF vetting
+  refuses single-label names (found in compose; agent-beta is `agent-beta.agents.internal`). The
+  registry should reject non-FQDN card endpoints at approval time (follow-up).
+- An agent with **no** `may_delegate_to` entries can't even bind at the A2A gateway (401). A
+  one-sided edge, where the caller offers but the target doesn't accept, is a 403
+  `delegation_denied`.
 - Agents receive the inbound bearer token as an explicit third argument, so they can act on the
   user's behalf downstream. It is never placed in `Principal`, logged or echoed.
 

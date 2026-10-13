@@ -75,7 +75,7 @@ class TestWorkflowOverHttps:
 
     def test_two_person_rule_and_roles(self, http: httpx.Client) -> None:  # noqa: F811
         dave, bob, carol = (reg_headers(http, w) for w in ("dave", "bob", "carol"))
-        spec = alpha_spec(display_name="Scratch", ingress=None, tools={}, models={})
+        spec = alpha_spec(display_name="Scratch", ingress=None, tools={}, models={}, delegation={})
         r = http.post(f"{REGISTRY}/{self.SCRATCH}/versions", json=spec, headers=dave)
         assert r.status_code == 201, r.text
         v = r.json()["version"]

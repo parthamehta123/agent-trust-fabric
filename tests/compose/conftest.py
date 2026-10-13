@@ -20,6 +20,9 @@ REGISTRY = "https://localhost:9446/registry/agents"
 AGENT = "0oa-agent-alpha"
 MCP_SERVER_ID = f"tickets-{uuid.uuid4().hex[:8]}"
 """Enrolled by the MCP suite; granted to agent-alpha here."""
+A2A_SERVER_ID = f"tickets-a2a-{uuid.uuid4().hex[:8]}"
+"""Enrolled by the A2A suite; granted to *both* agents (no amplification, ADR-0024 §3)."""
+BETA = "0oa-agent-beta"
 IDP_CONFIGURED = "https://mock-idp:8443"
 
 
@@ -55,23 +58,54 @@ def alpha_spec(**over: Any) -> dict[str, Any]:
             "t2_audience": "api://agent-alpha",
             "t2_jwks_uri": f"{IDP_CONFIGURED}/oauth2/agent-alpha/v1/keys",
         },
-        "tools": {MCP_SERVER_ID: ["tickets.read"]},
+        "tools": {MCP_SERVER_ID: ["tickets.read"], A2A_SERVER_ID: ["tickets.read"]},
         "models": {"claude-sonnet": {"daily_token_budget": 20000, "max_output_tokens": 256}},
+        "delegation": {"may_delegate_to": [BETA]},
     }
     spec.update(over)
     return spec
 
 
-def approve_new_version(http: httpx.Client, agent: str = AGENT, **over: Any) -> int:
-    """dave creates + submits, bob approves (two people). Returns the approved version."""
+def beta_spec(**over: Any) -> dict[str, Any]:
+    spec: dict[str, Any] = {
+        "display_name": "Agent beta",
+        "description": "Fetches tickets on behalf of other agents",
+        "owner_team": "alpha",
+        "tier": "standard",
+        "ingress": {
+            "t2_issuer": f"{IDP_CONFIGURED}/oauth2/agent-beta",
+            "t2_audience": "api://agent-beta",
+            "t2_jwks_uri": f"{IDP_CONFIGURED}/oauth2/agent-beta/v1/keys",
+        },
+        "tools": {A2A_SERVER_ID: ["tickets.read"]},
+        "delegation": {"accepts_delegation_from": [AGENT]},
+        "card": {
+            "endpoint": "https://agent-beta.agents.internal:8443/invocations",
+            "skills": [{"id": "get-ticket", "name": "Get ticket"}],
+        },
+    }
+    spec.update(over)
+    return spec
+
+
+def approve_new_version(
+    http: httpx.Client, agent: str = AGENT, spec: dict[str, Any] | None = None, **over: Any
+) -> int:
+    """dave creates + submits, bob approves; carol adds security approval when the version adds
+    a delegation edge (ADR-0024 §4). Returns the approved version."""
     dave, bob = reg_headers(http, "dave"), reg_headers(http, "bob")
-    r = http.post(f"{REGISTRY}/{agent}/versions", json=alpha_spec(**over), headers=dave)
+    body = spec if spec is not None else alpha_spec(**over)
+    r = http.post(f"{REGISTRY}/{agent}/versions", json=body, headers=dave)
     assert r.status_code == 201, r.text
     v = r.json()["version"]
-    assert http.post(f"{REGISTRY}/{agent}/versions/{v}/submit", headers=dave).status_code == 200
-    r = http.post(
-        f"{REGISTRY}/{agent}/versions/{v}/approve", json={"role": "approver"}, headers=bob
-    )
+    base = f"{REGISTRY}/{agent}/versions/{v}"
+    assert http.post(f"{base}/submit", headers=dave).status_code == 200
+    r = http.post(f"{base}/approve", json={"role": "approver"}, headers=bob)
+    assert r.status_code == 200, r.text
+    if r.json()["state"] == "in_review":
+        r = http.post(
+            f"{base}/approve", json={"role": "security"}, headers=reg_headers(http, "carol")
+        )
     assert (r.status_code, r.json()["state"]) == (200, "approved"), r.text
     return int(v)
 
@@ -92,6 +126,7 @@ def approved_alpha() -> Iterator[None]:
     from tests.compose.test_mcp_e2e import CA
 
     with httpx.Client(verify=ssl.create_default_context(cafile=str(CA)), timeout=15) as http:
+        approve_new_version(http, BETA, beta_spec())
         approve_new_version(http)
         wait_until(lambda: inference_status(http) == 200, what="gateways to enforce bundle")
     yield

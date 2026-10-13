@@ -79,6 +79,10 @@ REGISTRY_ADMINS: Final = {
 ENTITLED_USERS: Final = ("00u-alice",)
 """Users entitled to delegate ``tickets.read`` (ADR-0023 §1); everyone else is downscoped."""
 BUNDLE_ISSUER: Final = "atf-bundle-publisher"
+AGENT_BETA: Final = "agent-beta"
+AGENT_BETA_AUDIENCE: Final = "api://agent-beta"
+AGENT_BETA_CLIENT_ID: Final = "0oa-agent-beta"
+A2A_CLIENT_ID: Final = "0oa-a2a-gateway"
 
 # key file name -> client id
 CLIENT_KEYS: Final = {
@@ -90,6 +94,8 @@ CLIENT_KEYS: Final = {
     "reg-dave": "0oa-reg-dave",
     "reg-bob": "0oa-reg-bob",
     "reg-carol": "0oa-reg-carol",
+    "agent-beta": "0oa-agent-beta",
+    "a2a-gateway": "0oa-a2a-gateway",
 }
 
 DEFAULT_SERVICES: Final = (
@@ -102,6 +108,9 @@ DEFAULT_SERVICES: Final = (
     Service("inference-gateway", ("inference-gateway", "localhost")),
     Service("mock-llm", ("mock-llm",)),
     Service("agent-registry", ("agent-registry", "localhost")),
+    Service("a2a-gateway", ("a2a-gateway", "localhost")),
+    # FQDN for the A2A gateway (SSRF vetting requires one); bare name for its own healthcheck.
+    Service("agent-beta", ("agent-beta.agents.internal", "agent-beta")),
 )
 
 
@@ -198,6 +207,7 @@ def bootstrap(
     _write(out_dir / "mcp-egress.json", _json(_mcp_egress(base)), 0o644)
     _write(out_dir / "inference-profile.json", _json(_inference_profile(base)), 0o644)
     _write(out_dir / "model-routes.json", _json(_model_routes()), 0o644)
+    _write(out_dir / "a2a-egress.json", _json(_a2a_egress(base)), 0o644)
 
     # Bundle signing key (ADR-0022 §7): only the publisher mounts this directory; gateways get
     # the public JWK. Never under client-keys/ (which other containers mount files from).
@@ -279,6 +289,14 @@ def _topology(base: str, jwks: Mapping[str, Mapping[str, str]]) -> dict[str, Any
                 "restricted_scopes": {"tickets.read": list(ENTITLED_USERS)},
             },
             {
+                # Agent B's own AS: only the A2A gateway may exchange here (ADR-0024 §1).
+                "as_id": AGENT_BETA,
+                "resource_audience": AGENT_BETA_AUDIENCE,
+                "clients": [A2A_CLIENT_ID],
+                "agent_client_id": AGENT_BETA_CLIENT_ID,
+                "restricted_scopes": {"tickets.read": list(ENTITLED_USERS)},
+            },
+            {
                 "as_id": REGISTRY_AS,
                 "resource_audience": REGISTRY_AUDIENCE,
                 "clients": list(REGISTRY_ADMINS),
@@ -286,7 +304,7 @@ def _topology(base: str, jwks: Mapping[str, Mapping[str, str]]) -> dict[str, Any
             {
                 "as_id": WORKLOAD_AS,
                 "resource_audience": WORKLOAD_AUDIENCE,
-                "clients": [AGENT_CLIENT_ID],
+                "clients": [AGENT_CLIENT_ID, AGENT_BETA_CLIENT_ID],
             },
             {
                 "as_id": INFERENCE_AS,
@@ -316,6 +334,11 @@ def _topology(base: str, jwks: Mapping[str, Mapping[str, str]]) -> dict[str, Any
                 },
             ),
             client(TOOL_GATEWAY_CLIENT_ID, {f"{base}/oauth2/{TOOL_AS}": ["tickets.read"]}),
+            client(AGENT_BETA_CLIENT_ID, {f"{base}/oauth2/{WORKLOAD_AS}": ["tools.invoke"]}),
+            client(
+                A2A_CLIENT_ID,
+                {f"{base}/oauth2/{AGENT_BETA}": ["agent.invoke", "tickets.read"]},
+            ),
             *(
                 client(cid, {f"{base}/oauth2/{ADMIN_AS}": ["mcp.admin"]})
                 for cid in ADMIN_CLIENT_IDS
@@ -377,6 +400,32 @@ def _model_routes() -> dict[str, Any]:
             "provider_model": "openai/mock-sonnet",
             "api_base": "https://mock-llm:8443/v1",
         }
+    }
+
+
+def _a2a_egress(base: str) -> dict[str, Any]:
+    """A2A gateway egress base (ADR-0024 §1). ``idp.resource_*``, ``target`` and ``server_id``
+    are replaced per target agent from its signed grant; the values here only satisfy the
+    schema (they name agent-beta's AS)."""
+    return {
+        "profile_id": "a2a-gateway",
+        "gateway_id": "a2a-gateway",
+        "flow": "egress",
+        "enabled": True,
+        "idp": {
+            "issuer": base,
+            "jwks_uri": f"{base}/oauth2/v1/keys",
+            "token_endpoint": f"{base}/oauth2/v1/token",
+            "resource_issuer": f"{base}/oauth2/{AGENT_BETA}",
+            "resource_token_endpoint": f"{base}/oauth2/{AGENT_BETA}/v1/token",
+            "resource_jwks_uri": f"{base}/oauth2/{AGENT_BETA}/v1/keys",
+        },
+        "client": {"client_id": A2A_CLIENT_ID, "signing_key": "local:a2a-gateway"},
+        "egress_inbound": {
+            "issuer": f"{base}/oauth2/{WORKLOAD_AS}",
+            "audiences": [WORKLOAD_AUDIENCE],
+            "jwks_uri": f"{base}/oauth2/{WORKLOAD_AS}/v1/keys",
+        },
     }
 
 

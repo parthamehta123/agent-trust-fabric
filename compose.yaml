@@ -66,7 +66,7 @@ services:
       - ./.local-ca/mock-idp.key:/run/certs/tls.key:ro
       - ./.local-ca/mock-idp-topology.json:/run/config/mock-idp-topology.json:ro
     ports: ["127.0.0.1:9443:8443"]
-    networks: [edge, idp, idp-admin, idp-registry]
+    networks: [edge, idp, idp-admin, idp-registry, idp-beta]
     healthcheck: *tls-healthcheck
 
   interceptor:
@@ -331,6 +331,74 @@ services:
       timeout: 2s
       retries: 20
 
+  # ---------------------------------------------------------------- Agent-to-agent (ADR-0024)
+  # The A2A gateway is the only way into agent-beta (a2a-agents, pinned subnet for SSRF). Beta
+  # validates its own delegated token and calls tools through the MCP gateway like any agent.
+
+  agent-beta:
+    <<: *hardening
+    build: { context: ., dockerfile: deploy/local/service.Dockerfile, args: { SERVICE: atf-agent-runtime } }
+    command: ["atf_agent_runtime.app:app_from_env"]
+    environment:
+      <<: *bundle-env
+      ATF_ENV: local
+      ATF_RESOURCE_ISSUER: https://mock-idp:8443/oauth2/agent-beta
+      ATF_RESOURCE_AUDIENCE: api://agent-beta
+      ATF_RESOURCE_JWKS_URI: https://mock-idp:8443/oauth2/agent-beta/v1/keys
+      ATF_CA_BUNDLE: /run/certs/ca.pem
+      ATF_AGENT_ID: 0oa-agent-beta
+      ATF_MCP_URL: https://mcp-gateway:8443/mcp
+      ATF_WORKLOAD_CLIENT_ID: 0oa-agent-beta
+      ATF_WORKLOAD_SIGNING_KEY: local:agent-beta
+      ATF_WORKLOAD_TOKEN_ENDPOINT: https://mock-idp:8443/oauth2/workload/v1/token
+      ATF_LOCAL_KEYS_DIR: /run/keys
+    volumes:
+      - ./.local-ca/ca.pem:/run/certs/ca.pem:ro
+      - ./.local-ca/agent-beta.pem:/run/certs/tls.pem:ro
+      - ./.local-ca/agent-beta.key:/run/certs/tls.key:ro
+      - ./.local-ca/client-keys/agent-beta.pem:/run/keys/agent-beta.pem:ro
+      - ./.local-ca/bundle-key.jwk:/run/config/bundle-key.jwk:ro
+      - ./.local-ca/bundles:/run/bundles:ro
+    networks:
+      a2a-agents: { aliases: [agent-beta.agents.internal] }  # FQDN: required by SSRF vetting
+      idp-beta: {}  # its own path to the IdP: shares no network with other gateways
+      mcp-edge: {}
+    depends_on:
+      mock-idp: { condition: service_healthy }
+      bundle-publisher: { condition: service_healthy }
+    healthcheck:
+      <<: *tls-healthcheck
+      test: ["CMD", "python", "-c", "import ssl,urllib.request as u; u.urlopen('https://agent-beta:8443/ping', context=ssl.create_default_context(cafile='/run/certs/ca.pem'), timeout=2)"]
+
+  a2a-gateway:
+    <<: *hardening
+    build: { context: ., dockerfile: deploy/local/service.Dockerfile, args: { SERVICE: atf-a2a-gateway } }
+    command: ["atf_a2a_gateway.app:app_from_env"]
+    environment:
+      <<: *bundle-env
+      ATF_ENV: local
+      ATF_A2A_EGRESS_PROFILE_PATH: /run/config/a2a-egress.json
+      ATF_A2A_PUBLIC_URL: https://localhost:8446
+      ATF_A2A_TARGET_SCOPES: agent.invoke tickets.read
+      ATF_CA_BUNDLE: /run/certs/ca.pem
+      ATF_LOCAL_KEYS_DIR: /run/keys
+      ATF_SSRF_ALLOW_CIDRS: 10.232.0.0/16
+      AWS_REGION: us-east-1
+    volumes:
+      - ./.local-ca/ca.pem:/run/certs/ca.pem:ro
+      - ./.local-ca/a2a-gateway.pem:/run/certs/tls.pem:ro
+      - ./.local-ca/a2a-gateway.key:/run/certs/tls.key:ro
+      - ./.local-ca/a2a-egress.json:/run/config/a2a-egress.json:ro
+      - ./.local-ca/client-keys/a2a-gateway.pem:/run/keys/a2a-gateway.pem:ro
+      - ./.local-ca/bundle-key.jwk:/run/config/bundle-key.jwk:ro
+      - ./.local-ca/bundles:/run/bundles:ro
+    ports: ["127.0.0.1:8446:8443"]
+    networks: [a2a-edge, a2a-agents, idp]
+    depends_on:
+      agent-beta: { condition: service_healthy }
+      bundle-publisher: { condition: service_healthy }
+    healthcheck: *tls-healthcheck
+
 networks:
   edge: {}
   core: { internal: true }
@@ -351,3 +419,6 @@ networks:
   registry-edge: {}
   ddb-registry: { internal: true }
   idp-registry: { internal: true }
+  a2a-edge: {}
+  a2a-agents: { internal: true, ipam: { config: [{ subnet: 10.232.0.0/16 }] } }
+  idp-beta: { internal: true }
