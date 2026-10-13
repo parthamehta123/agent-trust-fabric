@@ -49,3 +49,12 @@ sbom.json
 .auth0-mcp-state.json
 
 .auth0-mcp-writes.log
+
+# OpenTofu (ADR-0026): never commit state, real variables, backend config or provider caches
+infra/**/.terraform/
+infra/modules/**/.terraform.lock.hcl
+*.tfstate
+*.tfstate.*
+*.tfvars
+!*.tfvars.example
+infra/**/backend.hcl

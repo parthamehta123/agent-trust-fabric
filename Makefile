@@ -6,7 +6,7 @@ PACKAGES := mock-idp gateway-emulator atf-agent-runtime atf-interceptor atf-mcp-
             atf-inference-gateway mock-llm atf-agent-registry atf-a2a-gateway \
             atf-knowledge-server
 
-.PHONY: certs kb-index wheels up e2e logs-scan down clean
+.PHONY: certs kb-index wheels up e2e logs-scan down clean iac-tools iac-validate
 
 certs:  ## ephemeral CA, service certs, client key, configs -> .local-ca/ (gitignored)
 	uv run python -m devstack.bootstrap --out .local-ca
@@ -53,3 +53,29 @@ down:
 
 clean: down
 	rm -rf .local-ca build
+
+# ---------------------------------------------------------------- IaC (ADR-0026). Nothing touches AWS.
+TOFU    := ghcr.io/opentofu/opentofu@sha256:22cb52f6c5bf5c72a48a8f56d993d8df3e9462b1cdfb5db7e77143c87e8d159f
+TFLINT  := atf-iac/tflint:0.64.0
+CHECKOV := atf-iac/checkov:3.3.20
+IAC_RUN := docker run --rm --user $(ATF_UID):$(ATF_GID) -e HOME=/tmp -e TF_PLUGIN_CACHE_DIR=/cache -e TFLINT_PLUGIN_DIR=/cache/tflint \
+	-v $(CURDIR)/infra:/w/infra -v $(CURDIR)/build/iac-cache:/cache
+
+iac-tools:  ## build the verified tflint/checkov images (signature + checksum checks, fail closed)
+	scripts/iac-tools.sh
+
+iac-validate:  ## fmt, init (providers only), validate, test, tflint, checkov (sandboxed, RR-8)
+	mkdir -p build/iac-cache
+	$(IAC_RUN) -w /w/infra $(TOFU) fmt -check -recursive
+	$(IAC_RUN) -w /w/infra/envs/dev $(TOFU) init -backend=false -input=false
+	$(IAC_RUN) -w /w/infra/envs/dev $(TOFU) validate
+	$(IAC_RUN) -w /w/infra/envs/dev $(TOFU) test
+	for mod in network kms dynamodb bundles budget; do \
+	  $(IAC_RUN) -w /w/infra/modules/$$mod $(TOFU) init -backend=false -input=false >/dev/null && \
+	  $(IAC_RUN) -w /w/infra/modules/$$mod $(TOFU) test || exit 1; \
+	done
+	$(IAC_RUN) -w /w/infra $(TFLINT) --init --config /w/infra/.tflint.hcl
+	$(IAC_RUN) -w /w/infra $(TFLINT) --recursive --config /w/infra/.tflint.hcl
+	docker run --rm --network none --read-only --tmpfs /tmp --cap-drop ALL \
+	  --security-opt no-new-privileges --user $(ATF_UID):$(ATF_GID) \
+	  -v $(CURDIR)/infra:/data:ro $(CHECKOV) -d /data --quiet --compact --framework terraform --skip-download

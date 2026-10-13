@@ -1,3 +1,5 @@
 *
 !build/req/
 !build/wheels/
+!build/iac/tflint
+!deploy/iac/checkov-requirements.txt

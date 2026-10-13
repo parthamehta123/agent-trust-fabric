@@ -1,0 +1,5 @@
+region              = "us-east-1"
+allowed_account_ids = ["000000000000"] # your sandbox account
+azs                 = ["us-east-1a", "us-east-1b"]
+bundle_bucket_name  = "atf-dev-bundles-REPLACE"
+budget_alert_emails = ["you@example.com"]
