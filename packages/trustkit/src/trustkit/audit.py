@@ -50,6 +50,8 @@ class AuditEvent:
     t2_jti_sha256: str | None = None
     actor_jti_sha256: str | None = None
     """Egress (ADR-0016): the agent workload token's jti hash."""
+    record_version: int | None = None
+    """Registry (ADR-0021): the agent record version a decision concerns."""
     t2_cached: bool | None = None
     scan_verdict: str | None = None
     scan_categories: tuple[str, ...] = ()

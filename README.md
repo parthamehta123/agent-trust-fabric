@@ -39,6 +39,7 @@ Identity, authorization and governance plane for AI agents:
 | `packages/gateway_emulator` | Test-only AgentCore Gateway emulator (documented behaviour) |
 | `services/mcp_gateway` | MCP tool gateway: data plane and separate admin plane |
 | `services/inference_gateway` | Model gateway embedding the LiteLLM SDK |
+| `services/agent_registry` | Agent registry: versioned security records with tiered approval |
 | `packages/mock_mcp`, `packages/mock_llm` | Test-only MCP tool server and OpenAI-compatible model server |
 | `packages/devstack` | Dev-only ephemeral CA, certs, keys and config generator |
 | `deploy/local`, `compose.yaml`, `Makefile` | Hardened local container stack |

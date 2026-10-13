@@ -121,7 +121,9 @@ Status values: `planned` · `in-progress` · `done (test: <id>)` · `accepted (A
 
 | ID | STRIDE | Threat | Mitigation | Phase | Status |
 |---|---|---|---|---|---|
-| TM-CP-01 | E | Agent owner self-approves elevated trust | Draft → review → approved workflow. Approver ≠ submitter, enforced server-side. Elevated tiers need security approval. | 4 | planned |
+| TM-CP-01 | E | Agent owner self-approves elevated trust | Draft → review → approved workflow (ADR-0021). The author never approves and no person counts twice; elevated and privileged need owner-team + security approval; in-review versions are frozen; privileged approvals expire after 90 days; conditional writes stop lost approvals; audit before write. | 4 | done in the registry (`tests/registry/test_workflow.py::TestApproval`, `TestAuditAndRaces`, `tests/registry/test_store.py`); gateways consume it via signed bundles in 4b |
+| TM-CP-05 | I | Registry reveals which agents exist to unrelated teams (enumeration) | Unreadable and missing agents both answer `not_found`; reads limited to the owner team, approvers and security. | 4 | done (`TestRead::test_outsider_cannot_tell_existing_from_missing`) |
+| TM-CP-06 | E | Agent moved to another team by a draft to escape its owners' review | A new version needs the current owner team; a transfer needs both teams; a draft can't change team. | 4 | done (`TestDrafts::test_ownership_transfer_needs_both_teams`, `test_edit_cannot_move_team`) |
 | TM-CP-02 | T | Unreviewed Terraform changes profiles or policies | CODEOWNERS on `infra/` and `docs/adr/`. Branch protection. Plan output reviewed in the PR. | 6 | planned |
 | TM-CP-03 | T | Supply-chain compromise (deps, actions) | Locked deps (`uv.lock`), hash-pinned image installs, `pip-audit`, SBOM, CI actions pinned by commit SHA, digest-pinned base images, Dependabot (pip/uv, actions, docker) | 0 | done (CI config) |
 | TM-CP-04 | I | Secrets committed to git | `gitleaks` + `detect-private-key` pre-commit + CI secret scan | 0 | in-progress |
@@ -148,6 +150,7 @@ Status values: `planned` · `in-progress` · `done (test: <id>)` · `accepted (A
 |---|---|---|
 | 2026-10-10 | — | Initial draft |
 | 2026-10-11 | Partha Mehta | Accepted ADR-0006/7/8. Added TM-ING-08 and TM-TOOL-07. |
+| 2026-10-13 | Partha Mehta | Phase 4 framing: in-process Cedar, signed policy bundles, three tiers, two-actor delegation chains. Phase 4a (ADR-0021): agent registry with tiered, server-enforced approval. TM-CP-01 done; TM-CP-05 and TM-CP-06 added and done. |
 | 2026-10-12 | Partha Mehta | Phase 3 complete (ADR-0020): the inference gateway runs in compose with its own AS audience, local-only `api_base` model routes, and its own DynamoDB network. Compose e2e 24/24 covers audience isolation, model allowlist, prompt and completion blocking (the model is never called for a blocked prompt), budget settlement in DynamoDB, and network isolation with positive controls. Pinned subnets moved out of Docker's default pools. ED-11 added. |
 | 2026-10-12 | Partha Mehta | Phase 3c (ADR-0019): inference gateway with the LiteLLM SDK (no hidden egress, tested in a fresh interpreter), workload-token auth, per-agent model allowlist, DynamoDB budget reservations, Bedrock Guardrails scanner. TM-INF-01/02/03 and TM-TOOL-04 done. ED-10 added. |
 | 2026-10-12 | Partha Mehta | Phase 3b complete: MCP gateway in containers (DynamoDB Local, separate admin plane sharing no network with the data plane). Compose e2e 14/14 over TLS incl. two-person approval, delegated-token verification by the tool, SSRF refusal, and rug-pull quarantine. Logs clean. |
