@@ -10,3 +10,8 @@ unless { context.user_scopes.containsAll(context.scopes) };
 @id("guardrail:privileged-no-shared-credentials")
 forbid (principal, action == Atf::Action::"invoke_tool", resource)
 when { principal.tier == "privileged" && resource.delegation == "none" };
+
+// ADR-0025 §2: a document is readable only in collections the *user* holds (kb.<c>.read).
+@id("guardrail:user-collections")
+forbid (principal, action == Atf::Action::"read_document", resource)
+unless { context.user_collections.contains(resource.collection) };

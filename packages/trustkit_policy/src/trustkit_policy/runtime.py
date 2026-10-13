@@ -7,6 +7,7 @@ import contextlib
 import itertools
 import json
 import pathlib
+import re
 import threading
 import time
 import uuid
@@ -20,12 +21,13 @@ from trustkit.exchange import KeyResolverFactory
 from trustkit.jwt import TokenValidator, ValidationPolicy, VerifiedToken
 from trustkit.profiles import ScannerFailureMode
 from trustkit_policy.bundle import BundleHolder, BundleVerifier, LoadedBundle, RefreshOutcome
-from trustkit_policy.grants import AgentGrant
+from trustkit_policy.grants import CLASSIFICATIONS, AgentGrant, classification_rank
 from trustkit_policy.pdp import DecisionRequest, PolicyDecision, Resource
 from trustkit_policy.schema import Action, ResourceType
 from trustkit_policy.sources import BundleSource, FileBundleSource
 
 MAX_AGE_CEILING_S: Final = 600
+_KB_SCOPE: Final = re.compile(r"^kb\.([a-z0-9][a-z0-9-]{0,62})\.read$")
 DEFAULT_REFRESH_S: Final = 60
 
 
@@ -314,3 +316,88 @@ def visible_card(
         "defaultOutputModes": ["text/plain"],
         "skills": [{"id": s.id, "name": s.name, "description": s.description} for s in card.skills],
     }
+
+
+@dataclass(frozen=True)
+class RetrievalFilter:
+    """Server-side retrieval filter (ADR-0025 §3): never derived from agent input."""
+
+    collections: frozenset[str]
+    max_rank: int
+
+
+def user_collections(scopes: frozenset[str]) -> frozenset[str]:
+    """``kb.<collection>.read`` scopes -> collections. Anything else is ignored."""
+    out = set()
+    for scope in scopes:
+        m = _KB_SCOPE.fullmatch(scope)
+        if m is not None:
+            out.add(m.group(1))
+    return frozenset(out)
+
+
+def knowledge_filter(
+    loaded: LoadedBundle,
+    *,
+    agent_id: str,
+    chain: tuple[str, ...],
+    user_collections: frozenset[str],
+    now: int,
+) -> RetrievalFilter | None:
+    """user ∩ every actor's collections; ceiling = the lowest of every actor's ceilings.
+    ``None`` when nothing is retrievable (no query is made at all)."""
+    if len(chain) > 1 or agent_id in chain:
+        return None
+    collections, max_rank = set(user_collections), len(CLASSIFICATIONS) - 1
+    for actor in (*chain, agent_id):
+        grant = loaded.grant(actor, now)
+        if grant is None or grant.knowledge is None:
+            return None
+        collections &= grant.knowledge.collections
+        max_rank = min(max_rank, classification_rank(grant.knowledge.max_classification))
+    return RetrievalFilter(frozenset(collections), max_rank) if collections else None
+
+
+def document_decision(
+    loaded: LoadedBundle,
+    *,
+    agent_id: str,
+    chain: tuple[str, ...],
+    user: str,
+    user_collections: frozenset[str],
+    collection: str,
+    classification: str,
+) -> PolicyDecision:
+    """Per-chunk Cedar ``read_document`` for every actor, plus ``delegate`` for every edge."""
+    if len(chain) > 1 or agent_id in chain:
+        return PolicyDecision(allowed=False)
+    try:
+        rank = classification_rank(classification)
+    except ValueError:
+        return PolicyDecision(allowed=False)  # an unknown label is never readable
+    ids: list[str] = []
+    actors = (*chain, agent_id)
+    for actor in actors:
+        d = loaded.pdp.decide(
+            DecisionRequest(
+                agent_id=actor,
+                action=Action.READ_DOCUMENT,
+                resource=Resource(
+                    ResourceType.DOCUMENT,
+                    f"{collection}:{rank}",
+                    {"collection": collection, "classification_rank": rank},
+                ),
+                context={"user": user, "user_collections": sorted(user_collections)},
+            )
+        )
+        ids.extend(d.policy_ids)
+        if not d.allowed:
+            return PolicyDecision(allowed=False, policy_ids=tuple(sorted(set(ids))))
+    for frm, to in itertools.pairwise(actors):
+        d = delegate_decision(
+            loaded, from_agent=frm, to_agent=to, user=user, user_scopes=frozenset()
+        )
+        ids.extend(d.policy_ids)
+        if not d.allowed:
+            return PolicyDecision(allowed=False, policy_ids=tuple(sorted(set(ids))))
+    return PolicyDecision(allowed=True, policy_ids=tuple(sorted(set(ids))))

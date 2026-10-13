@@ -9,6 +9,7 @@ members = [
     "atf-agent-runtime",
     "atf-inference-gateway",
     "atf-interceptor",
+    "atf-knowledge-server",
     "atf-mcp-gateway",
     "devstack",
     "gateway-emulator",
@@ -28,8 +29,9 @@ dev = [
     { name = "atf-agent-runtime", editable = "services/agent_runtime" },
     { name = "atf-inference-gateway", editable = "services/inference_gateway" },
     { name = "atf-interceptor", editable = "services/interceptor" },
+    { name = "atf-knowledge-server", editable = "services/knowledge_server" },
     { name = "atf-mcp-gateway", editable = "services/mcp_gateway" },
-    { name = "boto3-stubs", extras = ["bedrock-runtime", "dynamodb", "kms", "s3", "secretsmanager"], specifier = ">=1.35" },
+    { name = "boto3-stubs", extras = ["bedrock-agent-runtime", "bedrock-runtime", "dynamodb", "kms", "s3", "secretsmanager"], specifier = ">=1.35" },
     { name = "cyclonedx-bom", specifier = ">=4.5" },
     { name = "devstack", editable = "packages/devstack" },
     { name = "gateway-emulator", editable = "packages/gateway_emulator" },
@@ -318,6 +320,33 @@ requires-dist = [
 ]
 
 [[package]]
+name = "atf-knowledge-server"
+version = "0.0.0"
+source = { editable = "services/knowledge_server" }
+dependencies = [
+    { name = "boto3" },
+    { name = "fastapi" },
+    { name = "pydantic" },
+    { name = "trustkit" },
+    { name = "trustkit-aws" },
+    { name = "trustkit-http" },
+    { name = "trustkit-policy" },
+    { name = "uvicorn" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "boto3", specifier = ">=1.35" },
+    { name = "fastapi", specifier = ">=0.115" },
+    { name = "pydantic", specifier = ">=2.8" },
+    { name = "trustkit", editable = "packages/trustkit" },
+    { name = "trustkit-aws", editable = "packages/trustkit_aws" },
+    { name = "trustkit-http", editable = "packages/trustkit_http" },
+    { name = "trustkit-policy", editable = "packages/trustkit_policy" },
+    { name = "uvicorn", specifier = ">=0.30" },
+]
+
+[[package]]
 name = "atf-mcp-gateway"
 version = "0.0.0"
 source = { editable = "services/mcp_gateway" }
@@ -390,6 +419,9 @@ wheels = [
 ]
 
 [package.optional-dependencies]
+bedrock-agent-runtime = [
+    { name = "mypy-boto3-bedrock-agent-runtime" },
+]
 bedrock-runtime = [
     { name = "mypy-boto3-bedrock-runtime" },
 ]
@@ -1448,6 +1480,15 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/8f/0e/69aac6b8159da7c53e6115a2be1bf48e85503402cadbf506dd708e8b2ad7/mypy-2.4.0-cp312-cp312-win_amd64.whl", hash = "sha256:236e0d68f6941992b0811128e652590f590db444ab29ad8f1324765b9298b946", size = 11381574, upload-time = "2026-10-01T20:39:49.406Z" },
     { url = "https://files.pythonhosted.org/packages/6e/d3/d32ce4feb5993eec09d2024bef16cedc9b93701b1446b86092f08b24491b/mypy-2.4.0-cp312-cp312-win_arm64.whl", hash = "sha256:82d0f94c8587ccb472622ee7795280aaa38a06640d5f45b3f16909d6dd86a989", size = 10944729, upload-time = "2026-10-01T20:40:15.203Z" },
     { url = "https://files.pythonhosted.org/packages/81/12/46ae8670c98a3cd0286ca5645c2f918f8f6be65edfed81b916010619f668/mypy-2.4.0-py3-none-any.whl", hash = "sha256:d01c5d26a352acc6d5cf3128225477e1e8465e8d3029d4c345807fbf7f3cf093", size = 2800734, upload-time = "2026-10-01T20:39:26.837Z" },
+]
+
+[[package]]
+name = "mypy-boto3-bedrock-agent-runtime"
+version = "1.43.105"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/71/03/8109b4f84e19c827bc2fd79be0636a59c01ae7d7bcb4ba7852a41bcf2de6/mypy_boto3_bedrock_agent_runtime-1.43.105.tar.gz", hash = "sha256:82d945befae779576b6dbe44472b3781eeccfa879dfef568d1156fb6dafe2182", size = 47070, upload-time = "2026-09-29T22:34:11.556Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/dd/25/e4e233569e3ac7148bd49102c2d5e32133c5b4ae2cf64d9b3892e8021bd8/mypy_boto3_bedrock_agent_runtime-1.43.105-py3-none-any.whl", hash = "sha256:80d3df5bce1ea8638b16db645318e3ba7dcc2d21264f2b2254c77b2355b8b925", size = 56694, upload-time = "2026-09-29T22:34:09.429Z" },
 ]
 
 [[package]]

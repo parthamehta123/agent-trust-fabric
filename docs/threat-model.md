@@ -114,8 +114,8 @@ Status values: `planned` · `in-progress` · `done (test: <id>)` · `accepted (A
 
 | ID | STRIDE | Threat | Mitigation | Phase | Status |
 |---|---|---|---|---|---|
-| TM-KB-01 | I | Agent retrieves documents above the user's or its own clearance | Retrieval-time metadata filter built server-side from (agent record ∩ user entitlements). The agent cannot supply or widen the filter. | 5 | planned |
-| TM-KB-02 | T | Poisoned documents injected into the corpus | Source-bucket write access restricted. Ingestion records provenance. Classification is required, and unclassified documents are not indexed. | 5 | planned |
+| TM-KB-01 | I | Agent retrieves documents above the user's or its own clearance | Filter built server-side from user collections (IdP-downscoped `kb.<c>.read`) ∩ every actor's grant, with the lowest ceiling; every chunk re-checked in Cedar `read_document`; filter anomalies dropped and audited; agents supply only `query`/`top_k` (ADR-0025) | 5 | done in the library (`tests/policy/test_knowledge_policy.py`, `tests/knowledge/test_retrieval.py`); compose e2e in 5b |
+| TM-KB-02 | T | Poisoned documents injected into the corpus | Owner manifests bounded by the collection's ceiling; unlabelled or unknown collections refused; injection- and secret-shaped content refused before indexing (scanner failure = refuse); provenance per chunk; the CLI writes nothing if any document is rejected; poisoned chunks that slip through are withheld at retrieval | 5 | done (`tests/knowledge/test_ingest.py`, `test_retrieval.py::test_poisoned_chunk_withheld_others_returned`) |
 | TM-KB-03 | E | KB role reads beyond the intended prefix | Bucket policy limits the KB role to specific prefixes. No AssumeRole into the source account. | 5 | planned |
 
 ### TB-11: Control plane
@@ -160,6 +160,7 @@ Status values: `planned` · `in-progress` · `done (test: <id>)` · `accepted (A
 |---|---|---|
 | 2026-10-10 | — | Initial draft |
 | 2026-10-11 | Partha Mehta | Accepted ADR-0006/7/8. Added TM-ING-08 and TM-TOOL-07. |
+| 2026-10-13 | Partha Mehta | Phase 5a (ADR-0025): knowledge server (an MCP server behind the MCP gateway), collections plus classification ceiling, server-side filter plus per-chunk Cedar re-check, ingestion with bounded manifests and scan-before-index, Bedrock KB adapter (ED-13). Corrected during review: ingestion first refused PII-bearing documents (now allowed and masked at retrieval, as decided). TM-KB-01/02 done in the library. |
 | 2026-10-13 | Partha Mehta | Phase 4 complete (4c-ii-b): agent-beta runtime and A2A gateway in compose. A real user → alpha → beta → tool chain works; the tool independently verifies nested `act` and names both agents. Compose e2e 53/53, twice on one stack: laundering, edge withdrawal (both sides), revocation, an unentitled user, least-disclosure cards, isolation. Found: the SSRF guard refused a single-label runtime hostname (correct; FQDN alias added); agent-beta was reachable from the inference gateway through the shared IdP network (now on a dedicated `idp-beta`). |
 | 2026-10-13 | Partha Mehta | Phase 4c-ii-a: A2A gateway (`message/send`, least-disclosure cards, audit before minting), runtime-side `act` validation (closes TM-A2A-05: runtimes previously ignored `act`), a minimal tool-using agent B, chain-aware MCP gateway and interceptor, SSRF pinning shared in `trustkit_http`. Compose e2e still 40/40. |
 | 2026-10-13 | Partha Mehta | Phase 4c-i (ADR-0024): two-actor delegation chains (nested `act`), Cedar `delegate`, no amplification, edge approval by security, Agent Cards in the bundle. Found and fixed: a chain loop accepted under misconfiguration (now refused); duplicate Agent entities made `delegate` error (now fixed, and it failed closed). TM-TOOL-07 updated; TM-A2A-01..04 added. |

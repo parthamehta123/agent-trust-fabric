@@ -8,7 +8,7 @@ import threading
 from collections.abc import Sequence
 from dataclasses import dataclass
 from enum import StrEnum
-from typing import Annotated, Any, Final, Protocol
+from typing import Annotated, Any, Final, Literal, Protocol
 
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints
 
@@ -78,6 +78,16 @@ class DelegationRights(_Strict):
     accepts_delegation_from: Annotated[frozenset[AgentId], Field(max_length=64)] = frozenset()
 
 
+class KnowledgeSpec(_Strict):
+    """Knowledge grant (ADR-0025 §2): collections and a classification ceiling."""
+
+    collections: Annotated[
+        frozenset[Annotated[str, StringConstraints(pattern=r"^[a-z0-9][a-z0-9-]{0,62}$")]],
+        Field(min_length=1, max_length=64),
+    ]
+    max_classification: Literal["public", "internal", "confidential", "restricted"]
+
+
 class SkillSpec(_Strict):
     id: Annotated[str, StringConstraints(pattern=r"^[a-z0-9][a-z0-9-]{0,62}$")]
     name: Annotated[str, StringConstraints(min_length=1, max_length=128)]
@@ -110,6 +120,7 @@ class AgentSpec(_Strict):
     delegation: DelegationRights = DelegationRights()
     scanner_failure_mode: ScannerFailureMode = ScannerFailureMode.CLOSED
     card: CardSpec | None = None
+    knowledge: KnowledgeSpec | None = None
 
 
 def adds_delegation_edges(new: AgentSpec, previous: AgentSpec | None) -> bool:

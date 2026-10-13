@@ -1,0 +1,28 @@
+[project]
+name = "atf-knowledge-server"
+version = "0.0.0"
+description = "Knowledge server (MCP): retrieval-time authorization over a labelled corpus (ADR-0025)."
+requires-python = ">=3.12,<3.13"
+dependencies = [
+    "boto3>=1.35",
+    "fastapi>=0.115",
+    "pydantic>=2.8",
+    "trustkit",
+    "trustkit-aws",
+    "trustkit-http",
+    "trustkit-policy",
+    "uvicorn>=0.30",
+]
+
+[build-system]
+requires = ["hatchling>=1.25"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/atf_knowledge_server"]
+
+[tool.uv.sources]
+trustkit = { workspace = true }
+trustkit-aws = { workspace = true }
+trustkit-http = { workspace = true }
+trustkit-policy = { workspace = true }

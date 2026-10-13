@@ -40,6 +40,24 @@ class DelegationGrant(_Strict):
     accepts_delegation_from: frozenset[AgentId] = frozenset()
 
 
+CLASSIFICATIONS: Final = ("public", "internal", "confidential", "restricted")
+"""Ordered: a document's rank is its index (ADR-0025 §1)."""
+Classification = Literal["public", "internal", "confidential", "restricted"]
+CollectionSlug = Annotated[str, StringConstraints(pattern=r"^[a-z0-9][a-z0-9-]{0,62}$")]
+
+
+def classification_rank(c: str) -> int:
+    """Rank of a classification label; ``ValueError`` for anything unknown (never a default)."""
+    return CLASSIFICATIONS.index(c)
+
+
+class KnowledgeGrant(_Strict):
+    """What an agent may retrieve (ADR-0025 §2): collections and a classification ceiling."""
+
+    collections: Annotated[frozenset[CollectionSlug], Field(min_length=1, max_length=64)]
+    max_classification: Classification
+
+
 class Skill(_Strict):
     id: Annotated[str, StringConstraints(pattern=r"^[a-z0-9][a-z0-9-]{0,62}$")]
     name: Annotated[str, StringConstraints(min_length=1, max_length=128)]
@@ -69,6 +87,7 @@ class AgentGrant(_Strict):
     expires_at: Annotated[int, Field(gt=0)] | None = None
     """Epoch seconds; the grant is void after this even inside a fresh bundle."""
     card: CardGrant | None = None
+    knowledge: KnowledgeGrant | None = None
 
 
 def generate_permits(grants: Mapping[str, AgentGrant]) -> str:
@@ -104,6 +123,20 @@ def generate_permits(grants: Mapping[str, AgentGrant]) -> str:
                 f'action == Atf::Action::"call_model", '
                 f"resource == Atf::Model::{q(model)});"
             )
+    # Knowledge (ADR-0025 §2): granted collections up to the agent's classification ceiling.
+    for agent_id in sorted(grants):
+        g = grants[agent_id]
+        if g.knowledge is None:
+            continue
+        out.append(
+            f'@id("grant:{g.agent_id}:knowledge")\n'
+            f"permit (principal == Atf::Agent::{q(g.agent_id)}, "
+            f'action == Atf::Action::"read_document", resource)\n'
+            f"when {{ {cedar_set(g.knowledge.collections)}.contains(resource.collection) && "
+            f"resource.classification_rank <= "
+            f"{classification_rank(g.knowledge.max_classification)} }};"
+        )
+
     # Delegation edges (ADR-0024 §4): only when *both* records name each other.
     for frm in sorted(grants):
         for to in sorted(grants[frm].delegation.may_delegate_to):
