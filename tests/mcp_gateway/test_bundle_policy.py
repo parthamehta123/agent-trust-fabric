@@ -139,3 +139,40 @@ class TestAuthorizer:
     def test_fake_binding_without_scope_claim(self, world: World) -> None:
         authorize = bundle_authorizer(lambda: egress_bundle(), world.clock)
         assert authorize(BINDING, server()) is None
+
+
+@pytest.mark.security
+class TestChains:
+    """ADR-0024: B calling a tool on behalf of A, for the user."""
+
+    def chain_bundle(self, **a_over: Any) -> Any:
+        a = alpha_grant(**{"delegation": {"may_delegate_to": [AGENT_BETA_CLIENT]}, **a_over})
+        b = beta_grant(delegation={"accepts_delegation_from": [AGENT_CLIENT]})
+        return egress_bundle(a, b)
+
+    def bind_b(self, world: World, bundle: Any) -> Any:
+        from tests.exchange.test_chains import token_for_b
+
+        bind = bundle_binder(lambda: bundle, workload_v(world), world.jwks, world.clock)
+        return bind(headers(world, AGENT_BETA_CLIENT, t2=token_for_b(world)))
+
+    def test_b_binds_with_prior_actor(self, world: World) -> None:
+        b = self.bind_b(world, self.chain_bundle())
+        assert (b.agent_client_id, b.prior_actors) == (AGENT_BETA_CLIENT, (AGENT_CLIENT,))
+
+    def test_chain_allowed_when_every_actor_holds_the_grant(self, world: World) -> None:
+        bundle = self.chain_bundle()
+        authorize = bundle_authorizer(lambda: bundle, world.clock)
+        assert authorize(self.bind_b(world, bundle), server()) == frozenset({"tickets.read"})
+
+    def test_laundering_denied(self, world: World) -> None:
+        bundle = self.chain_bundle(tools={})  # A has no ticket rights of its own
+        authorize = bundle_authorizer(lambda: bundle, world.clock)
+        assert authorize(self.bind_b(world, bundle), server()) is None
+
+    def test_edge_removed_after_minting(self, world: World) -> None:
+        state: dict[str, Any] = {"b": self.chain_bundle()}
+        authorize = bundle_authorizer(lambda: state["b"], world.clock)
+        b = self.bind_b(world, state["b"])
+        state["b"] = self.chain_bundle(delegation={})
+        assert authorize(b, server()) is None

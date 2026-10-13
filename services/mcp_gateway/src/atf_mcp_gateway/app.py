@@ -105,6 +105,7 @@ def bundle_binder(
             subject,
             workload_validator=workload_validator,
             agents=agents,
+            max_prior_actors=1,  # ADR-0024: B may act for A (user -> A -> B), never deeper
         )
 
     return binder
@@ -133,6 +134,7 @@ def bundle_authorizer(
             server_id=record.server_id,
             delegation=record.delegation.value,
             requested=requested,
+            chain=binding.prior_actors,  # every actor and edge re-checked (no amplification)
         )
         return requested if decision.allowed else None
 
@@ -303,10 +305,10 @@ def _common(env: Mapping[str, str]) -> dict[str, Any]:
     """Shared wiring. Required variables are read up front: a missing one fails cold start."""
     import boto3
 
-    from atf_mcp_gateway.ssrf import PinnedClient, parse_local_allowlist
     from atf_mcp_gateway.store_dynamo import DynamoServerStore
     from trustkit.jwt import JwksKeyResolver, KeyResolver
     from trustkit_http.endpoint import HttpxTokenEndpoint
+    from trustkit_http.ssrf import PinnedClient, parse_local_allowlist
 
     ca, table, region = (
         env["ATF_CA_BUNDLE"],

@@ -7,7 +7,8 @@ import json
 
 import httpx
 import pytest
-from atf_mcp_gateway.ssrf import PinnedClient, SsrfError, is_forbidden_ip, vet_url
+
+from trustkit_http.ssrf import PinnedClient, SsrfError, is_forbidden_ip, vet_url
 
 PUBLIC = "93.184.216.34"
 

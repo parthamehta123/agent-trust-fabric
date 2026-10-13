@@ -62,7 +62,7 @@ class TestR2BoundedObservability:
         from trustkit.resource import Principal
 
         rt = AgentRuntime.__new__(AgentRuntime)
-        AgentRuntime.__init__(rt, authorizer=None, agent=lambda p, r: {})  # type: ignore[arg-type]
+        AgentRuntime.__init__(rt, authorizer=None, agent=lambda p, r, c: {})  # type: ignore[arg-type]
         for i in range(500):
             rt.principals_seen.append(Principal(f"u{i}", "c", frozenset(), None))
         assert len(rt.principals_seen) <= 64

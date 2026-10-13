@@ -1,0 +1,27 @@
+[project]
+name = "atf-a2a-gateway"
+version = "0.0.0"
+description = "Agent-to-agent gateway: A2A message/send brokered with delegated tokens, Cedar delegate checks and least-disclosure Agent Cards (ADR-0024)."
+requires-python = ">=3.12,<3.13"
+dependencies = [
+    "fastapi>=0.115",
+    "httpx>=0.27",
+    "trustkit",
+    "trustkit-aws",
+    "trustkit-http",
+    "trustkit-policy",
+    "uvicorn>=0.30",
+]
+
+[build-system]
+requires = ["hatchling>=1.25"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/atf_a2a_gateway"]
+
+[tool.uv.sources]
+trustkit = { workspace = true }
+trustkit-aws = { workspace = true }
+trustkit-http = { workspace = true }
+trustkit-policy = { workspace = true }

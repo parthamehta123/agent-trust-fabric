@@ -30,6 +30,8 @@ class AuthzFailure(StrEnum):
     MISSING_TOKEN = "missing_token"  # noqa: S105 - enum label, not a credential
     INVALID_TOKEN = "invalid_token"  # noqa: S105 - enum label, not a credential
     INSUFFICIENT_SCOPE = "insufficient_scope"
+    ACTOR_NOT_ACCEPTED = "actor_not_accepted"
+    """A delegated token whose actor this agent doesn't accept (ADR-0024 §5). 403."""
 
 
 class ResourceAuthzError(Exception):
@@ -46,7 +48,11 @@ class ResourceAuthzError(Exception):
         required_scope: str | None = None,
     ) -> None:
         self.failure, self.token_reason, self.required_scope = failure, token_reason, required_scope
-        self.status = 403 if failure is AuthzFailure.INSUFFICIENT_SCOPE else 401
+        self.status = (
+            403
+            if failure in (AuthzFailure.INSUFFICIENT_SCOPE, AuthzFailure.ACTOR_NOT_ACCEPTED)
+            else 401
+        )
         super().__init__(
             failure.value if token_reason is None else f"{failure.value} ({token_reason.value})"
         )
@@ -57,6 +63,8 @@ class ResourceAuthzError(Exception):
             return "Bearer"  # RFC 6750 §3.1: no error code when no credentials were sent
         if self.failure is AuthzFailure.INVALID_TOKEN:
             return 'Bearer error="invalid_token"'
+        if self.failure is AuthzFailure.ACTOR_NOT_ACCEPTED:
+            return 'Bearer error="insufficient_scope"'  # 403; names nothing about the actor
         scope = self.required_scope or ""
         if not _SCOPE_TOKEN.fullmatch(scope):  # never let a value break the header grammar
             return 'Bearer error="insufficient_scope"'
@@ -69,6 +77,8 @@ class Principal:
     client_id: str
     scopes: frozenset[str]
     token_jti: str | None
+    actors: tuple[str, ...] = ()
+    """Agents that delegated to this one, oldest first (ADR-0024). Empty = user's own T2."""
 
 
 class ResourceAuthorizer:
@@ -86,7 +96,11 @@ class ResourceAuthorizer:
         audience: str,
         keys: KeyResolver,
         now: Callable[[], int] = lambda: int(time.time()),
+        accept_actor: Callable[[str], bool] | None = None,
     ) -> None:
+        """``accept_actor``: whether a delegated token from that agent is acceptable (bundle +
+        Cedar ``delegate``). ``None`` = delegated tokens (any ``act``) are refused."""
+        self._accept_actor = accept_actor
         self._validator = TokenValidator(
             ValidationPolicy(
                 issuer=issuer,
@@ -114,6 +128,30 @@ class ResourceAuthorizer:
         scopes = frozenset(scope.split())
         if required_scope not in scopes:
             raise ResourceAuthzError(AuthzFailure.INSUFFICIENT_SCOPE, required_scope=required_scope)
+        actors = self._actors(token.claims.get("act"))
         return Principal(
-            subject=token.subject, client_id=client_id, scopes=scopes, token_jti=token.jti
+            subject=token.subject,
+            client_id=client_id,
+            scopes=scopes,
+            token_jti=token.jti,
+            actors=actors,
         )
+
+    def _actors(self, act: object) -> tuple[str, ...]:
+        """ADR-0024 §5: no ``act`` -> user's own token. Otherwise only if this runtime opted in,
+        the chain is exactly one well-formed actor, and that actor is accepted."""
+        from trustkit.binding import parse_act_chain  # local: binding imports resource types
+
+        if act is None:
+            return ()
+        if self._accept_actor is None:
+            raise ResourceAuthzError(AuthzFailure.INVALID_TOKEN, Reason.MALFORMED)
+        try:
+            chain = parse_act_chain(act)
+        except ValueError:
+            raise ResourceAuthzError(AuthzFailure.INVALID_TOKEN, Reason.MALFORMED) from None
+        if len(chain) != 1:
+            raise ResourceAuthzError(AuthzFailure.INVALID_TOKEN, Reason.MALFORMED)
+        if not self._accept_actor(chain[0]):
+            raise ResourceAuthzError(AuthzFailure.ACTOR_NOT_ACCEPTED)
+        return chain

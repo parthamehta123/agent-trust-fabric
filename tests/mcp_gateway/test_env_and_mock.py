@@ -9,13 +9,13 @@ from typing import Any
 
 import pytest
 from atf_mcp_gateway.app import build_admin_app, build_data_app
-from atf_mcp_gateway.ssrf import SsrfConfigError
 from fastapi.testclient import TestClient
 from joserfc.jwk import RSAKey
 from moto import mock_aws
 
 from mock_mcp.app import create_app as mock_mcp_app
 from tests.conftest import NOW, Mint, good_claims
+from trustkit_http.ssrf import SsrfConfigError
 
 TOOL_ISS, TOOL_AUD = "https://idp.example.test/oauth2/tool-tickets", "api://tool-tickets"
 
@@ -129,3 +129,19 @@ class TestMockMcp:
         after = mcp.post("/mcp", json={"jsonrpc": "2.0", "id": 1, "method": "tools/list"}).json()
         assert before != after
         assert json.dumps(after).count("forward") == 1
+
+
+def test_mock_renders_actor_chain(mcp: TestClient, mint: Mint) -> None:
+    t = tok(mint, act={"sub": "0oa-agent-beta", "act": {"sub": "0oa-agent-alpha"}})
+    r = mcp.post(
+        "/mcp",
+        json={
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "tools/call",
+            "params": {"name": "get_ticket", "arguments": {"id": "T-7"}},
+        },
+        headers={"Authorization": f"Bearer {t}"},
+    )
+    text = r.json()["result"]["content"][0]["text"]
+    assert text.endswith("via 0oa-agent-beta on behalf of 0oa-agent-alpha")

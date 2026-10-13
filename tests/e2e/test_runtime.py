@@ -16,7 +16,7 @@ from trustkit.resource import Principal, ResourceAuthorizer
 ISS, AUD = "https://idp.example.test/oauth2/agent-alpha", "api://agent-alpha"
 
 
-def echo(p: Principal, req: Mapping[str, Any]) -> Mapping[str, Any]:
+def echo(p: Principal, req: Mapping[str, Any], cred: str = "") -> Mapping[str, Any]:
     return {"output": f"echo: {req.get('prompt', '')}"}
 
 
@@ -99,7 +99,7 @@ class TestRuntimeRejects:
             assert seg.encode() not in r.body
 
     def test_agent_exception_is_500_without_details(self, rsa_key: RSAKey, mint: Mint) -> None:
-        def broken(p: Principal, req: Mapping[str, Any]) -> Mapping[str, Any]:
+        def broken(p: Principal, req: Mapping[str, Any], cred: str = "") -> Mapping[str, Any]:
             raise RuntimeError("secret internal detail")
 
         authz = ResourceAuthorizer(

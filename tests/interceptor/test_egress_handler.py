@@ -186,3 +186,36 @@ class TestEgressPolicy:
         req = out["mcp"]["transformedGatewayRequest"]
         c = claims(req["headers"]["Authorization"].removeprefix("Bearer "))
         assert c["scope"] == "tickets.read"
+
+
+@pytest.mark.security
+class TestEgressChains:
+    """ADR-0024 on the AgentCore path: B calls a tool on behalf of A."""
+
+    def bundle(self, **a_over: Any) -> Any:
+        a = alpha_grant(**{"delegation": {"may_delegate_to": [AGENT_BETA_CLIENT]}, **a_over})
+        b = beta_grant(delegation={"accepts_delegation_from": [AGENT_CLIENT]})
+        return egress_bundle(a, b)
+
+    def call(self, world: World, bundle: Any) -> tuple[Harness, dict[str, Any]]:
+        from tests.exchange.test_chains import token_for_b
+
+        hh = build(world, policy=lambda: bundle)
+        out = hh.call(
+            tool_call(mint_workload(world, AGENT_BETA_CLIENT), token_for_b(world)),
+            hh.ctx(arn=TOOLS_ARN),
+        )
+        return hh, out
+
+    def test_tool_token_carries_full_chain(self, world: World) -> None:
+        hh, out = self.call(world, self.bundle())
+        req = out["mcp"]["transformedGatewayRequest"]
+        c = claims(req["headers"]["Authorization"].removeprefix("Bearer "))
+        assert c["act"] == {"sub": AGENT_BETA_CLIENT, "act": {"sub": AGENT_CLIENT}}
+        a = hh.last_audit()
+        assert (a.client_id, a.actor_chain) == (AGENT_BETA_CLIENT, (AGENT_CLIENT,))
+
+    def test_laundering_denied(self, world: World) -> None:
+        hh, out = self.call(world, self.bundle(tools={}))
+        assert denied_status(out) == 403
+        assert hh.last_audit().reason == "policy_denied"

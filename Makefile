@@ -13,7 +13,7 @@ certs:  ## ephemeral CA, service certs, client key, configs -> .local-ca/ (gitig
 # Least privilege: each image gets only the first-party wheels it imports (never devstack).
 WHEELS_mock-idp := mock_idp
 WHEELS_gateway-emulator := gateway_emulator trustkit trustkit_http
-WHEELS_atf-agent-runtime := atf_agent_runtime trustkit trustkit_http
+WHEELS_atf-agent-runtime := atf_agent_runtime trustkit trustkit_http trustkit_policy trustkit_aws
 WHEELS_atf-interceptor := atf_interceptor trustkit trustkit_http trustkit_aws trustkit_policy
 WHEELS_atf-mcp-gateway := atf_mcp_gateway trustkit trustkit_http trustkit_aws trustkit_policy
 WHEELS_mock-mcp := mock_mcp

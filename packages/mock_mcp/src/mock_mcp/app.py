@@ -73,7 +73,12 @@ def create_app(
             or not isinstance(c.get("sub"), str)
         ):
             return None
-        return c["sub"], act["sub"]
+        # ADR-0024: render the whole actor chain, newest first ("B on behalf of A").
+        chain, node = [act["sub"]], act.get("act")
+        while isinstance(node, dict) and isinstance(node.get("sub"), str) and len(chain) < 4:
+            chain.append(node["sub"])
+            node = node.get("act")
+        return c["sub"], " on behalf of ".join(chain)
 
     def rpc(
         rid: Any, *, result: Any = None, code: int | None = None, status: int = 200

@@ -367,6 +367,7 @@ def _decide_egress_request(
             subject_token,
             workload_validator=workload_validator(profile),
             agents=agents,
+            max_prior_actors=1,  # ADR-0024: user -> A -> B, never deeper
         )
     except ActorBindingError as e:
         raise _Deny(401, f"actor_binding:{e.reason.value}") from None
@@ -375,6 +376,7 @@ def _decide_egress_request(
         client_id=binding.agent_client_id,
         at_jti_sha256=jti_hash(binding.subject_token.jti),
         actor_jti_sha256=jti_hash(binding.workload.jti),
+        actor_chain=binding.prior_actors,
     )
     decision = tool_decision(
         loaded,
@@ -384,6 +386,7 @@ def _decide_egress_request(
         server_id=server_id,
         delegation="token",
         requested=binding.allowed_scopes,
+        chain=binding.prior_actors,
     )
     call.fields["policy_ids"] = decision.policy_ids
     if not decision.allowed:

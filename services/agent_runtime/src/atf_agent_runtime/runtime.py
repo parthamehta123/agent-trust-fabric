@@ -26,8 +26,10 @@ DEFAULT_REQUIRED_SCOPE: Final = "agent.invoke"
 DEFAULT_MAX_BODY_BYTES: Final = 262_144
 PRINCIPAL_HISTORY: Final = 64
 
-Agent = Callable[[Principal, Mapping[str, Any]], Mapping[str, Any]]
-"""(authorized principal, request JSON) -> response JSON."""
+Agent = Callable[[Principal, Mapping[str, Any], str], Mapping[str, Any]]
+"""(authorized principal, request JSON, inbound bearer token) -> response JSON. The token is
+passed only so an agent can act on the user's behalf downstream (as a subject token); it is
+never logged, stored or echoed."""
 
 
 @dataclass(frozen=True)
@@ -72,10 +74,14 @@ class AgentRuntime:
 
         self.principals_seen.append(principal)
         try:
-            output = self.agent(principal, request)
+            output = self.agent(principal, request, _bearer(auth_values[0]))
         except Exception:  # noqa: BLE001 - agent failures never leak details to the caller
             return _json(500, {"error": "internal_error"})
         return _json(200, dict(output))
+
+
+def _bearer(header: str) -> str:
+    return header.split(" ", 1)[1] if " " in header else ""
 
 
 def _deny(e: ResourceAuthzError) -> InvocationResult:

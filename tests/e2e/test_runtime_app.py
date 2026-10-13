@@ -17,7 +17,7 @@ from trustkit.resource import Principal, ResourceAuthorizer
 ISS, AUD = "https://idp.example.test/oauth2/agent-alpha", "api://agent-alpha"
 
 
-def echo(p: Principal, req: Mapping[str, Any]) -> Mapping[str, Any]:
+def echo(p: Principal, req: Mapping[str, Any], cred: str = "") -> Mapping[str, Any]:
     return {"output": "ok"}
 
 

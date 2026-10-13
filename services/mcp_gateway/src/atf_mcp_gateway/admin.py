@@ -24,10 +24,10 @@ from atf_mcp_gateway.servers import (
     StoreConflictError,
 )
 from atf_mcp_gateway.snapshot import SnapshotError, take_snapshot
-from atf_mcp_gateway.ssrf import Network, Resolver, SsrfError, default_resolver, vet_url
 from trustkit.jwt import TokenValidationError, TokenValidator
 from trustkit.profiles import ScannerFailureMode
 from trustkit.scanning import ContentScanner, Direction, Verdict, scan_with_policy
+from trustkit_http.ssrf import Network, Resolver, SsrfError, default_resolver, vet_url
 
 ADMIN_SCOPE: Final = "mcp.admin"
 _BEARER: Final = re.compile(r"^[Bb][Ee][Aa][Rr][Ee][Rr] ([A-Za-z0-9._~+/=-]+)$")

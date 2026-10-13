@@ -4,6 +4,7 @@ requires-python = "==3.12.*"
 
 [manifest]
 members = [
+    "atf-a2a-gateway",
     "atf-agent-registry",
     "atf-agent-runtime",
     "atf-inference-gateway",
@@ -22,6 +23,7 @@ members = [
 
 [manifest.dependency-groups]
 dev = [
+    { name = "atf-a2a-gateway", editable = "services/a2a_gateway" },
     { name = "atf-agent-registry", editable = "services/agent_registry" },
     { name = "atf-agent-runtime", editable = "services/agent_runtime" },
     { name = "atf-inference-gateway", editable = "services/inference_gateway" },
@@ -195,6 +197,31 @@ wheels = [
 ]
 
 [[package]]
+name = "atf-a2a-gateway"
+version = "0.0.0"
+source = { editable = "services/a2a_gateway" }
+dependencies = [
+    { name = "fastapi" },
+    { name = "httpx" },
+    { name = "trustkit" },
+    { name = "trustkit-aws" },
+    { name = "trustkit-http" },
+    { name = "trustkit-policy" },
+    { name = "uvicorn" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "fastapi", specifier = ">=0.115" },
+    { name = "httpx", specifier = ">=0.27" },
+    { name = "trustkit", editable = "packages/trustkit" },
+    { name = "trustkit-aws", editable = "packages/trustkit_aws" },
+    { name = "trustkit-http", editable = "packages/trustkit_http" },
+    { name = "trustkit-policy", editable = "packages/trustkit_policy" },
+    { name = "uvicorn", specifier = ">=0.30" },
+]
+
+[[package]]
 name = "atf-agent-registry"
 version = "0.0.0"
 source = { editable = "services/agent_registry" }
@@ -228,7 +255,9 @@ source = { editable = "services/agent_runtime" }
 dependencies = [
     { name = "fastapi" },
     { name = "trustkit" },
+    { name = "trustkit-aws" },
     { name = "trustkit-http" },
+    { name = "trustkit-policy" },
     { name = "uvicorn" },
 ]
 
@@ -236,7 +265,9 @@ dependencies = [
 requires-dist = [
     { name = "fastapi", specifier = ">=0.115" },
     { name = "trustkit", editable = "packages/trustkit" },
+    { name = "trustkit-aws", editable = "packages/trustkit_aws" },
     { name = "trustkit-http", editable = "packages/trustkit_http" },
+    { name = "trustkit-policy", editable = "packages/trustkit_policy" },
     { name = "uvicorn", specifier = ">=0.30" },
 ]
 

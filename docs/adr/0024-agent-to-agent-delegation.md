@@ -64,6 +64,16 @@ agent B ──(workload_B + T_B)──▶ tool gateway ──exchange @ tool AS�
 7. **Audit:** decisions carry `actor_chain`, the prior actors oldest-first, alongside
    `client_id` (the current actor) and the `policy_ids`.
 
+## Implementation notes (4c-ii)
+
+- The A2A gateway reuses the MCP gateway's SSRF pinning, now shared as `trustkit_http.ssrf`.
+- Runtimes refuse any `act` by default (`ResourceAuthorizer(accept_actor=None)`). Before this,
+  `act` was silently ignored (TM-A2A-05).
+- The broker audits an allowed delegation **before** minting B's token; if the audit write
+  fails, nothing is minted or forwarded (503).
+- Agents receive the inbound bearer token as an explicit third argument, so they can act on the
+  user's behalf downstream. It is never placed in `Principal`, logged or echoed.
+
 ## Consequences
 
 - TM-TOOL-07 changes from "chains denied" to "chains bounded, both-sides, non-amplifying".

@@ -22,7 +22,6 @@ from atf_mcp_gateway.servers import (
     StoreConflictError,
 )
 from atf_mcp_gateway.snapshot import take_snapshot
-from atf_mcp_gateway.ssrf import SsrfConfigError, SsrfError, parse_local_allowlist, vet_url
 from atf_mcp_gateway.store_dynamo import DynamoServerStore
 from fastapi.testclient import TestClient
 from joserfc.jwk import RSAKey
@@ -35,6 +34,7 @@ from tests.mcp_gateway.test_snapshot import TOOLS
 from trustkit.binding import ActorBindingError, ActorBindingReason
 from trustkit.jwt import TokenValidator, ValidationPolicy
 from trustkit.scanning import LocalRulesScanner
+from trustkit_http.ssrf import SsrfConfigError, SsrfError, parse_local_allowlist, vet_url
 
 SECRET_ARN_NAME = "weather-key"
 

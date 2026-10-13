@@ -6,6 +6,8 @@ requires-python = ">=3.12,<3.13"
 dependencies = [
     "fastapi>=0.115",
     "trustkit",
+    "trustkit-aws",
+    "trustkit-policy",
     "trustkit-http",
     "uvicorn>=0.30",
 ]
@@ -19,4 +21,6 @@ packages = ["src/atf_agent_runtime"]
 
 [tool.uv.sources]
 trustkit = { workspace = true }
+trustkit-aws = { workspace = true }
+trustkit-policy = { workspace = true }
 trustkit-http = { workspace = true }

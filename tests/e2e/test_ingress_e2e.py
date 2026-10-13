@@ -34,7 +34,7 @@ PATH = "/agent-alpha/invocations"
 class Agent:
     reply: dict[str, Any] = field(default_factory=lambda: {"output": "hello"})
 
-    def __call__(self, p: Principal, req: Mapping[str, Any]) -> Mapping[str, Any]:
+    def __call__(self, p: Principal, req: Mapping[str, Any], cred: str = "") -> Mapping[str, Any]:
         return self.reply
 
 
