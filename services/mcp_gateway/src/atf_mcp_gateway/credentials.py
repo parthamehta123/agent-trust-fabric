@@ -79,6 +79,7 @@ class GatewayCredentials:
                 return self._profiles[key]
         doc = {
             **self._base,
+            "server_id": record.server_id,
             "target": {"audience": record.audience, "scopes": sorted(record.scopes)},
         }
         try:

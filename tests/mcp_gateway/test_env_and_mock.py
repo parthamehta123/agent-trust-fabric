@@ -23,10 +23,15 @@ TOOL_ISS, TOOL_AUD = "https://idp.example.test/oauth2/tool-tickets", "api://tool
 @pytest.fixture
 def env(tmp_path: pathlib.Path) -> Iterator[dict[str, str]]:
     from devstack.bootstrap import bootstrap
+    from tests.policy.test_bundle import SIGNER
 
     r = bootstrap(tmp_path / "ca")
+    (tmp_path / "bundle-key.jwk").write_text(json.dumps(SIGNER.public_jwk()))
     with mock_aws():
         yield {
+            "ATF_BUNDLE_ISSUER": "atf-bundle-publisher",
+            "ATF_BUNDLE_PUBLIC_JWK_PATH": str(tmp_path / "bundle-key.jwk"),
+            "ATF_BUNDLE_PATH": str(tmp_path / "bundle.jws"),
             "ATF_ENV": "local",
             "ATF_CA_BUNDLE": str(r.ca_cert),
             "ATF_DDB_TABLE": "mcp-servers",
@@ -59,7 +64,10 @@ class TestFactories:
         with pytest.raises(SsrfConfigError):
             build({**env, "ATF_ENV": "prod"})
 
-    @pytest.mark.parametrize("missing", ["ATF_CA_BUNDLE", "ATF_DDB_TABLE"])
+    @pytest.mark.parametrize(
+        "missing",
+        ["ATF_CA_BUNDLE", "ATF_DDB_TABLE", "ATF_BUNDLE_ISSUER", "ATF_BUNDLE_PUBLIC_JWK_PATH"],
+    )
     def test_required_env(self, env: dict[str, str], missing: str) -> None:
         with pytest.raises(KeyError):
             build_data_app({k: v for k, v in env.items() if k != missing})

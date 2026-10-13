@@ -13,7 +13,7 @@ from typing import Annotated, Any
 
 from pydantic import Field, TypeAdapter, ValidationError
 
-from atf_inference_gateway.policy import InferenceProfile, ModelId, _Strict
+from atf_inference_gateway.policy import ModelId, _Strict
 from atf_inference_gateway.service import Completion, CompletionFn
 from trustkit.profiles import HttpsUrl, ProfileConfigError
 
@@ -51,13 +51,6 @@ def load_routes(raw: str | bytes, *, env: Mapping[str, str]) -> Mapping[str, Mod
     if env.get("ATF_ENV") != "local" and any(r.api_base is not None for r in routes.values()):
         raise RoutesConfigError("api_base is honoured only with ATF_ENV=local")
     return routes
-
-
-def check_coverage(profile: InferenceProfile, routes: Mapping[str, ModelRoute]) -> None:
-    """Every model in any agent's allowlist must have a route (else ``RoutesConfigError``)."""
-    allowlisted = {m for policy in profile.agents.values() for m in policy.models}
-    if not allowlisted <= routes.keys():
-        raise RoutesConfigError("an allowlisted model has no route")
 
 
 def routed(routes: Mapping[str, ModelRoute], provider: ProviderFn) -> CompletionFn:

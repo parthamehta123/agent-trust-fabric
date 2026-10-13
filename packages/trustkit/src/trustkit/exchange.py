@@ -248,15 +248,21 @@ class IdJagExchanger:
             raise ExchangeError(ExchangeReason.PROFILE_NOT_EGRESS)
         if not profile.enabled:
             raise ExchangeError(ExchangeReason.PROFILE_DISABLED)
-        if profile.client is None or binding.agent_client_id not in (profile.agents or {}):
+        requested = profile.target.scopes & binding.allowed_scopes
+        if profile.client is None or not requested:
             raise ExchangeError(ExchangeReason.AGENT_NOT_CONFIGURED)
 
+        # The requested scopes are part of the key: when a policy bundle narrows an agent's
+        # grant, a token minted under the broader grant must never be served from cache.
         key = cache_key(
             at_jti=binding.subject_token.jti,
             idt_jti=binding.workload.jti,
             subject=binding.subject,
             audience=profile.target.audience,
-            profile_id=f"{profile.profile_id}#delegated#{binding.agent_client_id}",
+            profile_id=(
+                f"{profile.profile_id}#delegated#{binding.agent_client_id}"
+                f"#{' '.join(sorted(requested))}"
+            ),
         )
         if key is not None and (hit := self._cache.get(key)) is not None:
             return dataclasses.replace(hit, cached=True)
@@ -267,9 +273,6 @@ class IdJagExchanger:
             raise ExchangeError(ExchangeReason.SIGNING_FAILED) from None
 
         idp, step = profile.idp, "delegation"
-        requested = profile.target.scopes & binding.allowed_scopes
-        if not requested:
-            raise ExchangeError(ExchangeReason.T2_SCOPE_ESCALATION, step=step)
         body = self._call(
             step,
             idp.resource_token_endpoint,

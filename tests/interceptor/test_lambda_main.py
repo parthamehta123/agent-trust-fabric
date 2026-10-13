@@ -153,3 +153,33 @@ def test_kms_reference_builds_kms_signer_in_any_env() -> None:
         )["KeyMetadata"]["Arn"]
         f = make_signer_factory({"ATF_ENV": "prod"})
         assert isinstance(f(arn), KmsEs256Signer)
+
+
+@pytest.mark.security
+class TestBundleWiring:
+    def base(self, tmp_path: pathlib.Path) -> dict[str, str]:
+        p = tmp_path / "profiles.json"
+        p.write_text(json.dumps({"version": 1, "profiles": [profile_doc(gateway_id="gw-alpha")]}))
+        write_key(tmp_path / "keys", "chat")
+        return {
+            "ATF_ENV": "local",
+            "ATF_PROFILES_PATH": str(p),
+            "ATF_LOCAL_KEYS_DIR": str(tmp_path / "keys"),
+        }
+
+    def test_bundle_configured_handler_runs(self, tmp_path: pathlib.Path) -> None:
+        from tests.policy.test_bundle import SIGNER
+
+        (tmp_path / "k.jwk").write_text(json.dumps(SIGNER.public_jwk()))
+        env = {
+            **self.base(tmp_path),
+            "ATF_BUNDLE_ISSUER": "atf-bundle-publisher",
+            "ATF_BUNDLE_PUBLIC_JWK_PATH": str(tmp_path / "k.jwk"),
+            "ATF_BUNDLE_PATH": str(tmp_path / "bundle.jws"),
+        }
+        assert status(build_handler(env)(event(), ctx())) == 401  # wired, real pipeline
+
+    def test_broken_bundle_config_denies_everything(self, tmp_path: pathlib.Path) -> None:
+        """Bundle configured but unusable (no source): cold-start failure -> deny-all handler."""
+        env = {**self.base(tmp_path), "ATF_BUNDLE_ISSUER": "x"}
+        assert status(build_handler(env)(event(), ctx())) == 503

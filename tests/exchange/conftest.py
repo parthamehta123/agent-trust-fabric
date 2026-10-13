@@ -121,14 +121,7 @@ def egress_doc(**overrides: Any) -> dict[str, Any]:
             "audiences": ["api://tool-gateway"],
             "jwks_uri": f"{BASE}/oauth2/workload/v1/keys",
         },
-        agents={
-            AGENT_CLIENT: {
-                "t2_issuer": f"{BASE}/oauth2/agent-alpha",
-                "t2_audience": "api://agent-alpha",
-                "t2_jwks_uri": f"{BASE}/oauth2/agent-alpha/v1/keys",
-                "allowed_scopes": ["tickets.read"],
-            }
-        },
+        server_id="tickets",
     )
     for k in ("ingress_clients", "max_auth_age_s", "ingress_token"):
         del p[k]
@@ -183,7 +176,12 @@ def world() -> World:
     )
     for server in (
         AuthorizationServer(
-            "agent-alpha", "api://agent-alpha", frozenset({CHAT, OTHER}), AGENT_CLIENT
+            "agent-alpha",
+            "api://agent-alpha",
+            frozenset({CHAT, OTHER}),
+            AGENT_CLIENT,
+            # Only ALICE is entitled to delegate ticket reads (ADR-0023 §1).
+            {"tickets.read": frozenset({ALICE})},
         ),
         AuthorizationServer("agent-beta", "api://agent-beta", frozenset({CHAT}), AGENT_BETA_CLIENT),
         AuthorizationServer(
@@ -205,8 +203,10 @@ def world() -> World:
                 client,
                 {"keys": [{**s.public_jwk(), "kid": s.key_id}]},
                 {
-                    idp.issuer("agent-alpha"): frozenset({"agent.invoke", "agent.admin"}),
-                    idp.issuer("agent-beta"): frozenset({"agent.invoke"}),
+                    idp.issuer("agent-alpha"): frozenset(
+                        {"agent.invoke", "agent.admin", "tickets.read"}
+                    ),
+                    idp.issuer("agent-beta"): frozenset({"agent.invoke", "tickets.read"}),
                 },
             )
         )
@@ -271,7 +271,11 @@ def world() -> World:
 
 
 def mint_t2(
-    world: World, user: str = ALICE, agent_as: str = "agent-alpha", client: str = CHAT
+    world: World,
+    user: str = ALICE,
+    agent_as: str = "agent-alpha",
+    client: str = CHAT,
+    scope: str = "agent.invoke tickets.read",
 ) -> str:
     """A genuine ingress T2 for ``user`` at ``agent_as`` (ID-JAG + JWT-bearer via the mock)."""
     from trustkit.signing import build_client_assertion
@@ -294,7 +298,7 @@ def mint_t2(
             "subject_token": idt,
             "subject_token_type": "urn:ietf:params:oauth:token-type:id_token",
             "audience": idp.issuer(agent_as),
-            "scope": "agent.invoke",
+            "scope": scope,
             "client_assertion_type": "urn:ietf:params:oauth:client-assertion-type:jwt-bearer",
             "client_assertion": assertion(ep),
         },
@@ -333,3 +337,29 @@ def mint_workload(world: World, agent: str = AGENT_CLIENT) -> str:
     )
     assert r.status == 200, r.body
     return str(r.body["access_token"])
+
+
+# ----------------------------------------------------------------------------- policy bundles
+
+
+def alpha_grant(**over: Any) -> Any:
+    from tests.policy.helpers import make_grant, t2_binding
+
+    doc: dict[str, Any] = {"ingress": t2_binding(BASE, "agent-alpha", "api://agent-alpha")}
+    doc.update(over)
+    return make_grant(AGENT_CLIENT, **doc)
+
+
+def beta_grant(**over: Any) -> Any:
+    from tests.policy.helpers import make_grant, t2_binding
+
+    doc: dict[str, Any] = {"ingress": t2_binding(BASE, "agent-beta", "api://agent-beta")}
+    doc.update(over)
+    return make_grant(AGENT_BETA_CLIENT, **doc)
+
+
+def egress_bundle(*grants: Any) -> Any:
+    """Loaded bundle granting ``grants`` (default: agent-alpha may read tickets)."""
+    from tests.policy.helpers import loaded_bundle
+
+    return loaded_bundle(*(grants or (alpha_grant(),)), iat=T0)

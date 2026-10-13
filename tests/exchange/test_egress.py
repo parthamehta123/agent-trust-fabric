@@ -38,12 +38,22 @@ from trustkit.jwt import TokenValidator, ValidationPolicy
 from trustkit.profiles import GatewayProfile, load_profiles
 from trustkit.workload import WorkloadTokenError, WorkloadTokenProvider
 
+ALPHA_POLICY = {
+    "t2_issuer": f"{BASE}/oauth2/agent-alpha",
+    "t2_audience": "api://agent-alpha",
+    "t2_jwks_uri": f"{BASE}/oauth2/agent-alpha/v1/keys",
+    "allowed_scopes": ["tickets.read"],
+}
 BETA_POLICY = {
     "t2_issuer": f"{BASE}/oauth2/agent-beta",
     "t2_audience": "api://agent-beta",
     "t2_jwks_uri": f"{BASE}/oauth2/agent-beta/v1/keys",
     "allowed_scopes": ["tickets.read"],
 }
+ALPHA_ONLY = {AGENT_CLIENT: ALPHA_POLICY}
+BOTH = {AGENT_CLIENT: ALPHA_POLICY, AGENT_BETA_CLIENT: BETA_POLICY}
+"""Test-local agent bindings. In the product these come from the signed policy bundle
+(ADR-0022); here they exercise ``bind_actor`` and ``exchange_delegated`` directly."""
 
 
 def egress_profile(**overrides: Any) -> GatewayProfile:
@@ -52,18 +62,11 @@ def egress_profile(**overrides: Any) -> GatewayProfile:
     return reg.lookup("gw-tools")
 
 
-def both_agents_profile() -> GatewayProfile:
-    agents = dict(egress_doc()["agents"])
-    agents[AGENT_BETA_CLIENT] = BETA_POLICY
-    return egress_profile(agents=agents)
-
-
 def validators(
-    world: World, profile: GatewayProfile
+    world: World, profile: GatewayProfile, agents_doc: dict[str, dict[str, Any]] | None = None
 ) -> tuple[TokenValidator, dict[str, AgentPolicy]]:
     ei = profile.egress_inbound
     assert ei is not None
-    assert profile.agents is not None
     workload_v = TokenValidator(
         ValidationPolicy(issuer=ei.issuer, audiences=ei.audiences, expected_typ="at+jwt"),
         world.jwks(ei.jwks_uri),
@@ -73,14 +76,16 @@ def validators(
         cid: AgentPolicy(
             TokenValidator(
                 ValidationPolicy(
-                    issuer=a.t2_issuer, audiences=frozenset({a.t2_audience}), expected_typ="at+jwt"
+                    issuer=a["t2_issuer"],
+                    audiences=frozenset({a["t2_audience"]}),
+                    expected_typ="at+jwt",
                 ),
-                world.jwks(a.t2_jwks_uri),
+                world.jwks(a["t2_jwks_uri"]),
                 now=world.clock,
             ),
-            a.allowed_scopes,
+            frozenset(a["allowed_scopes"]),
         )
-        for cid, a in profile.agents.items()
+        for cid, a in (agents_doc or ALPHA_ONLY).items()
     }
     return workload_v, agents
 
@@ -96,9 +101,10 @@ def binding(
     workload: str | None = None,
     t2: str | None = None,
     profile: GatewayProfile | None = None,
+    agents_doc: dict[str, dict[str, Any]] | None = None,
 ) -> Any:
     p = profile or egress_profile()
-    wv, agents = validators(world, p)
+    wv, agents = validators(world, p, agents_doc)
     return bind_actor(
         workload or mint_workload(world), t2 or mint_t2(world), workload_validator=wv, agents=agents
     )
@@ -136,7 +142,7 @@ class TestBindActorRejects:
             ActorBindingReason.SUBJECT_INVALID,
             workload=mint_workload(world, AGENT_BETA_CLIENT),
             t2=mint_t2(world),
-            profile=both_agents_profile(),
+            agents_doc=BOTH,
         )
 
     def test_agent_not_allowed_through_this_gateway(self, world: World) -> None:
@@ -164,17 +170,20 @@ class TestBindActorRejects:
     def test_delegation_chain_refused(self, world: World) -> None:
         """TM-TOOL-07: a token that already carries `act` can't be delegated again (depth 1)."""
         tool_token = self._delegated_token(world)
-        profile = egress_profile(
-            agents={
-                AGENT_CLIENT: {
-                    "t2_issuer": f"{BASE}/oauth2/tool-tickets",
-                    "t2_audience": TOOL_AUDIENCE,
-                    "t2_jwks_uri": f"{BASE}/oauth2/tool-tickets/v1/keys",
-                    "allowed_scopes": ["tickets.read"],
-                }
+        accepts_tool_tokens = {
+            AGENT_CLIENT: {
+                "t2_issuer": f"{BASE}/oauth2/tool-tickets",
+                "t2_audience": TOOL_AUDIENCE,
+                "t2_jwks_uri": f"{BASE}/oauth2/tool-tickets/v1/keys",
+                "allowed_scopes": ["tickets.read"],
             }
+        }
+        binding_fails(
+            world,
+            ActorBindingReason.DELEGATION_CHAIN,
+            t2=tool_token,
+            agents_doc=accepts_tool_tokens,
         )
-        binding_fails(world, ActorBindingReason.DELEGATION_CHAIN, t2=tool_token, profile=profile)
 
     @staticmethod
     def _delegated_token(world: World) -> str:
@@ -241,14 +250,29 @@ class TestDelegatedExchangeRejects:
     def test_disabled(self, world: World) -> None:
         self._deny(world, ExchangeReason.PROFILE_DISABLED, profile=egress_profile(enabled=False))
 
-    def test_agent_not_in_profile(self, world: World) -> None:
-        b = binding(
-            world,
-            profile=both_agents_profile(),
-            workload=mint_workload(world, AGENT_BETA_CLIENT),
-            t2=mint_t2(world, agent_as="agent-beta"),
-        )
+    def test_agent_without_grant_for_target(self, world: World) -> None:
+        """No granted scope for this target (bundle, ADR-0022): refuse before any IdP call."""
+        from dataclasses import replace
+
+        b = replace(binding(world), allowed_scopes=frozenset({"wiki.read"}))
+        calls = len(world.endpoint.calls)
         self._deny(world, ExchangeReason.AGENT_NOT_CONFIGURED, b=b)
+        assert len(world.endpoint.calls) == calls
+
+    @pytest.mark.security
+    def test_narrowed_grant_never_served_from_cache(self, world: World) -> None:
+        """A policy bundle narrows the agent's scopes: the broader cached token must not be
+        reused for the narrower request (cache key includes the requested scopes)."""
+        from dataclasses import replace
+
+        wide = binding(world)
+        wide = replace(wide, allowed_scopes=frozenset({"tickets.read", "tickets.write"}))
+        first = world.exchanger.exchange_delegated(wide, egress_profile())
+        narrow = replace(wide, allowed_scopes=frozenset({"tickets.read"}))
+        second = world.exchanger.exchange_delegated(narrow, egress_profile())
+        assert not second.cached
+        assert first.token != second.token
+        assert claims(second.token)["scope"] == "tickets.read"
 
     def test_tool_as_also_enforces_actor_is_subjects_agent(self, world: World) -> None:
         """Defence in depth: bypass binding and the tool AS still refuses beta on alpha's T2."""

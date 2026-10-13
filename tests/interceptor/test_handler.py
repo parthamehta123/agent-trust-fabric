@@ -17,7 +17,14 @@ from atf_interceptor.handler import RESERVED_HEADERS, Handler, InterceptorDeps, 
 from hypothesis import HealthCheck, given, settings
 from hypothesis import strategies as st
 
-from tests.exchange.conftest import ALICE, CHAT, World, egress_doc, profile_doc
+from tests.exchange.conftest import (
+    ALICE,
+    CHAT,
+    World,
+    egress_bundle,
+    egress_doc,
+    profile_doc,
+)
 from trustkit.audit import AuditEvent, Decision
 from trustkit.exchange import ExchangeError, ExchangeReason
 from trustkit.profiles import ProfileConfigError, ProfileRegistry, load_profiles
@@ -119,6 +126,7 @@ def build(world: World, **overrides: Any) -> Harness:
         "audit": audit,
         "now": world.clock,
         "monotonic": mono,
+        "policy": lambda: egress_bundle(),
     }
     args.update(overrides)
     deps = InterceptorDeps(**args)

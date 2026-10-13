@@ -12,15 +12,17 @@ from tests.exchange.conftest import (
     AGENT_BETA_CLIENT,
     AGENT_CLIENT,
     ALICE,
+    BOB,
     GATEWAY_CLIENT,
     TOOL_AUDIENCE,
     World,
-    egress_doc,
+    alpha_grant,
+    beta_grant,
+    egress_bundle,
     mint_t2,
     mint_workload,
 )
-from tests.exchange.test_egress import BETA_POLICY
-from tests.interceptor.test_handler import TOOLS_ARN, Harness, build, denied_status, registry
+from tests.interceptor.test_handler import TOOLS_ARN, Harness, build, denied_status
 from trustkit.audit import Decision
 from trustkit.policy import RESERVED_HEADERS
 
@@ -108,9 +110,8 @@ class TestEgressDeny:
         )
 
     def test_confused_deputy(self, world: World) -> None:
-        agents = dict(egress_doc()["agents"])
-        agents[AGENT_BETA_CLIENT] = BETA_POLICY
-        hh = build(world, profiles=lambda: registry({"agents": agents}))
+        both = egress_bundle(alpha_grant(), beta_grant())
+        hh = build(world, policy=lambda: both)
         out = hh.call(
             tool_call(mint_workload(world, AGENT_BETA_CLIENT), mint_t2(world)),
             hh.ctx(arn=TOOLS_ARN),
@@ -135,3 +136,53 @@ class TestEgressDeny:
         out = h.call(tool_call(None, None), h.ctx(arn=TOOLS_ARN))
         body = out["mcp"]["transformedGatewayResponse"]["body"]
         assert (body["id"], body["error"]["code"]) == (7, -32000)
+
+
+@pytest.mark.security
+class TestEgressPolicy:
+    """ADR-0022/0023: the signed bundle and Cedar decide, not profile configuration."""
+
+    def call(self, h: Harness, world: World, **kw: Any) -> dict[str, Any]:
+        wl = kw.pop("workload", None) or mint_workload(world)
+        t2 = kw.pop("t2", None) or mint_t2(world)
+        return h.call(tool_call(wl, t2), h.ctx(arn=TOOLS_ARN))
+
+    def test_no_bundle_fails_closed(self, world: World) -> None:
+        hh = build(world, policy=lambda: None)
+        assert denied_status(self.call(hh, world)) == 503
+        assert hh.last_audit().reason == "policy_unavailable"
+
+    def test_agent_absent_from_bundle(self, world: World) -> None:
+        hh = build(world, policy=lambda: egress_bundle(beta_grant()))
+        assert denied_status(self.call(hh, world)) == 401
+        assert hh.last_audit().reason == "actor_binding:agent_not_allowed"
+
+    def test_agent_has_no_grant_for_this_server(self, world: World) -> None:
+        hh = build(world, policy=lambda: egress_bundle(alpha_grant(tools={"wiki": ["w.read"]})))
+        assert denied_status(self.call(hh, world)) == 401
+        assert hh.last_audit().reason == "actor_binding:agent_not_allowed"
+
+    def test_expired_grant(self, world: World) -> None:
+        hh = build(world, policy=lambda: egress_bundle(alpha_grant(expires_at=world.clock())))
+        assert denied_status(self.call(hh, world)) == 401
+
+    def test_user_not_entitled_is_denied_by_guardrail(self, h: Harness, world: World) -> None:
+        """BOB isn't entitled to tickets.read, so his T2 doesn't carry it (IdP downscoping):
+        the agent's own grant can't make up for it (TM-TOOL-01)."""
+        out = self.call(h, world, t2=mint_t2(world, BOB))
+        assert denied_status(out) == 403
+        a = h.last_audit()
+        assert (a.reason, a.policy_ids) == ("policy_denied", ("guardrail:user-scopes",))
+        assert not any("tool-tickets" in url for url, _ in world.endpoint.calls[-1:])
+
+    def test_allowed_decision_audited_with_policy_id(self, h: Harness, world: World) -> None:
+        self.call(h, world)
+        assert h.last_audit().policy_ids == ("grant:0oa-agent-alpha:tool:tickets",)
+
+    def test_delegated_scope_is_the_granted_intersection(self, world: World) -> None:
+        """Target offers read+write; the grant says read: the tool token carries read only."""
+        hh = build(world, policy=lambda: egress_bundle(alpha_grant()))
+        out = self.call(hh, world)
+        req = out["mcp"]["transformedGatewayRequest"]
+        c = claims(req["headers"]["Authorization"].removeprefix("Bearer "))
+        assert c["scope"] == "tickets.read"

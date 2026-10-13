@@ -8,6 +8,7 @@ dependencies = [
     "fastapi>=0.115",
     "litellm==1.105.0",
     "trustkit",
+    "trustkit-policy",
     "trustkit-aws",
     "trustkit-http",
     "uvicorn>=0.30",
@@ -22,5 +23,6 @@ packages = ["src/atf_inference_gateway"]
 
 [tool.uv.sources]
 trustkit = { workspace = true }
+trustkit-policy = { workspace = true }
 trustkit-http = { workspace = true }
 trustkit-aws = { workspace = true }

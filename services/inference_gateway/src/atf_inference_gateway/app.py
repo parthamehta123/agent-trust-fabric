@@ -68,16 +68,20 @@ def build_app(env: Mapping[str, str]) -> FastAPI:
     """
     import datetime
     import pathlib
+    import sys
 
     import boto3
 
     from atf_inference_gateway.budget import DynamoBudgetStore
     from atf_inference_gateway.llm import configure_tls, litellm_complete
     from atf_inference_gateway.policy import load_inference_profile
-    from atf_inference_gateway.routes import check_coverage, load_routes, routed
+    from atf_inference_gateway.routes import load_routes, routed
+    from trustkit.audit import JsonLinesSink
     from trustkit.jwt import JwksKeyResolver, ValidationPolicy
     from trustkit.scanning import ContentScanner, LocalRulesScanner
+    from trustkit_aws.s3_bundles import s3_source_factory
     from trustkit_http.endpoint import HttpxTokenEndpoint
+    from trustkit_policy.runtime import policy_from_env
 
     profile_path, routes_path = env["ATF_INFERENCE_PROFILE_PATH"], env["ATF_MODEL_ROUTES_PATH"]
     table, ca = env["ATF_BUDGET_TABLE"], env["ATF_CA_BUNDLE"]
@@ -85,7 +89,6 @@ def build_app(env: Mapping[str, str]) -> FastAPI:
 
     profile = load_inference_profile(pathlib.Path(profile_path).read_bytes())
     routes = load_routes(pathlib.Path(routes_path).read_bytes(), env=env)
-    check_coverage(profile, routes)
     configure_tls(ca)
 
     http = HttpxTokenEndpoint(ca_bundle_path=ca)
@@ -121,6 +124,10 @@ def build_app(env: Mapping[str, str]) -> FastAPI:
         scanner=scanner,
         complete=routed(routes, litellm_complete),
         today=lambda: datetime.datetime.now(datetime.UTC).date().isoformat(),
+        policy=policy_from_env(
+            env, s3_factory=s3_source_factory(region), audit=JsonLinesSink(sys.stdout)
+        ),
+        routable=frozenset(routes),
     )
     return create_app(service, validator)
 

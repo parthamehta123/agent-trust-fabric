@@ -35,6 +35,10 @@ def build_idp_from_topology(topology: Mapping[str, Any], *, base_url: str) -> Mo
                 srv["resource_audience"],
                 frozenset(srv["clients"]),
                 srv.get("agent_client_id"),
+                {
+                    scope: frozenset(users)
+                    for scope, users in srv.get("restricted_scopes", {}).items()
+                },
             )
         )
     for c in topology["clients"]:

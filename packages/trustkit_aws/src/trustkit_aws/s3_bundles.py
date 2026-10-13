@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from typing import TYPE_CHECKING
 
 from botocore.exceptions import BotoCoreError, ClientError
@@ -43,3 +44,19 @@ class S3BundleSource:
             raise S3BundleError("bundle fetch failed") from None
         except BotoCoreError:
             raise S3BundleError("bundle store unreachable") from None
+
+
+MAX_BUNDLE_BYTES = 4 * 1024 * 1024
+"""Mirrors ``trustkit_policy.bundle.MAX_BUNDLE_BYTES`` (kept local: no dependency on it)."""
+
+
+def s3_source_factory(region: str) -> Callable[[str, str], S3BundleSource]:
+    """``(bucket, key) -> S3BundleSource`` for ``trustkit_policy.runtime.policy_from_env``."""
+    import boto3
+
+    client = boto3.client("s3", region_name=region)
+
+    def make(bucket: str, key: str) -> S3BundleSource:
+        return S3BundleSource(client, bucket=bucket, key=key, max_bytes=MAX_BUNDLE_BYTES)
+
+    return make

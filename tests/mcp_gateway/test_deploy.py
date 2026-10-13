@@ -30,7 +30,7 @@ from moto import mock_aws
 
 from tests.conftest import AUDIENCE, ISSUER, NOW, Mint, StaticKeys, good_claims
 from tests.exchange.conftest import TOOL_AUDIENCE, World, egress_doc
-from tests.mcp_gateway.test_proxy import BINDING, Upstream, call, record
+from tests.mcp_gateway.test_proxy import BINDING, Upstream, call, overlap, record
 from tests.mcp_gateway.test_snapshot import TOOLS
 from trustkit.binding import ActorBindingError, ActorBindingReason
 from trustkit.jwt import TokenValidator, ValidationPolicy
@@ -264,7 +264,13 @@ def data_client() -> tuple[TestClient, Upstream]:
             raise ActorBindingError(ActorBindingReason.WORKLOAD_INVALID)
         return BINDING
 
-    proxy = McpProxy(store=store, upstream=up, credentials=Creds(), scanner=LocalRulesScanner())
+    proxy = McpProxy(
+        store=store,
+        upstream=up,
+        credentials=Creds(),
+        scanner=LocalRulesScanner(),
+        authorize=overlap,
+    )
     return TestClient(create_data_app(proxy, binder)), up
 
 

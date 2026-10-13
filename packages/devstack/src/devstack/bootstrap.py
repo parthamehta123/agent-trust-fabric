@@ -289,7 +289,8 @@ def _topology(base: str, jwks: Mapping[str, Mapping[str, str]]) -> dict[str, Any
 
 
 def _mcp_egress(base: str) -> dict[str, Any]:
-    """Egress profile document for the MCP gateway (ADR-0016/0018); target is per server."""
+    """Egress profile base for the MCP gateway (ADR-0016/0018). ``target`` and ``server_id`` are
+    set per server record; which agents may use a server comes from the policy bundle."""
     return {
         "profile_id": "mcp-gateway",
         "gateway_id": "mcp-gateway",
@@ -310,31 +311,17 @@ def _mcp_egress(base: str) -> dict[str, Any]:
             "audiences": [WORKLOAD_AUDIENCE],
             "jwks_uri": f"{base}/oauth2/{WORKLOAD_AS}/v1/keys",
         },
-        "agents": {
-            AGENT_CLIENT_ID: {
-                "t2_issuer": f"{base}/oauth2/{AGENT}",
-                "t2_audience": AGENT_AUDIENCE,
-                "t2_jwks_uri": f"{base}/oauth2/{AGENT}/v1/keys",
-                "allowed_scopes": ["tickets.read"],
-            }
-        },
     }
 
 
 def _inference_profile(base: str) -> dict[str, Any]:
-    """Inference gateway profile (ADR-0019): its own audience, so tool-gateway tokens don't work."""
+    """Inference gateway profile (ADR-0019): its own audience, so tool-gateway tokens don't work.
+    Model grants and budgets come from the policy bundle (ADR-0022)."""
     return {
         "inbound": {
             "issuer": f"{base}/oauth2/{INFERENCE_AS}",
             "audiences": [INFERENCE_AUDIENCE],
             "jwks_uri": f"{base}/oauth2/{INFERENCE_AS}/v1/keys",
-        },
-        "agents": {
-            AGENT_CLIENT_ID: {
-                "models": [LOGICAL_MODEL],
-                "daily_token_budget": 20_000,
-                "max_output_tokens": 256,
-            }
         },
         "scanner_failure_mode": "closed",
     }

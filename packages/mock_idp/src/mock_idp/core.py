@@ -95,6 +95,10 @@ class AuthorizationServer:
     agent_client_id: str | None = None
     """The agent whose API ``resource_audience`` is. A delegation exchange presenting a subject
     token from this AS must have this agent as its actor (AS-side confused-deputy guard)."""
+    restricted_scopes: Mapping[str, frozenset[str]] = field(default_factory=dict)
+    """Scope -> the users entitled to it (an Okta access-policy rule per group, simplified).
+    An ID-JAG for this AS drops restricted scopes the user isn't entitled to (RFC 6749 §3.3
+    downscoping); unlisted scopes are unrestricted."""
 
 
 class _OAuthError(Exception):
@@ -282,6 +286,17 @@ class MockIdp:
         requested = frozenset((form.get("scope") or "").split()) or allowed
         if not requested <= allowed:
             raise _OAuthError("invalid_scope", "requested scope exceeds policy")
+        # User entitlements (ADR-0023 §1): drop restricted scopes this user isn't entitled to.
+        # RFC 6749 §3.3 lets the AS grant fewer scopes; granting none is an error.
+        server = next(srv for a, srv in self._servers.items() if self.issuer(a) == audience)
+        sub = idt.claims["sub"]
+        requested = frozenset(
+            sc
+            for sc in requested
+            if sc not in server.restricted_scopes or sub in server.restricted_scopes[sc]
+        )
+        if not requested:
+            raise _OAuthError("invalid_scope", "user is not entitled to any requested scope")
 
         now = self._now()
         scope = " ".join(sorted(requested))

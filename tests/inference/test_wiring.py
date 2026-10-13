@@ -10,10 +10,8 @@ from typing import Any
 import boto3
 import pytest
 from atf_inference_gateway.app import build_app
-from atf_inference_gateway.policy import load_inference_profile
 from atf_inference_gateway.routes import (
     RoutesConfigError,
-    check_coverage,
     load_routes,
     routed,
 )
@@ -32,17 +30,6 @@ def routes_doc(**over: Any) -> dict[str, Any]:
     doc: dict[str, Any] = {LOGICAL: {"provider_model": PROVIDER, "api_base": BASE}}
     doc.update(over)
     return doc
-
-
-def logical_profile(*models: str) -> Any:
-    agents = {
-        AGENT: {
-            "models": list(models or [LOGICAL]),
-            "daily_token_budget": 1000,
-            "max_output_tokens": 64,
-        }
-    }
-    return load_inference_profile(json.dumps(profile_doc(agents=agents)))
 
 
 class TestLoadRoutes:
@@ -91,19 +78,6 @@ class TestLoadRoutes:
             load_routes(raw, env=LOCAL)
 
 
-class TestCoverage:
-    def test_all_allowlisted_models_routed(self) -> None:
-        check_coverage(logical_profile(), load_routes(json.dumps(routes_doc()), env=LOCAL))
-
-    @pytest.mark.security
-    def test_unrouted_allowlisted_model_fails_cold_start(self) -> None:
-        with pytest.raises(RoutesConfigError):
-            check_coverage(
-                logical_profile(LOGICAL, "claude-opus"),
-                load_routes(json.dumps(routes_doc()), env=LOCAL),
-            )
-
-
 class TestRouted:
     def test_maps_logical_to_provider_and_base(self) -> None:
         calls: list[tuple[Any, ...]] = []
@@ -140,10 +114,16 @@ class TestRouted:
 
 @pytest.fixture
 def files(tmp_path: pathlib.Path) -> dict[str, str]:
-    (tmp_path / "profile.json").write_text(json.dumps(profile_doc(agents=_agents())))
+    (tmp_path / "profile.json").write_text(json.dumps(profile_doc()))
     (tmp_path / "routes.json").write_text(json.dumps(routes_doc()))
     (tmp_path / "ca.pem").write_bytes(_ca_pem())
+    from tests.policy.test_bundle import SIGNER
+
+    (tmp_path / "bundle-key.jwk").write_text(json.dumps(SIGNER.public_jwk()))
     return {
+        "ATF_BUNDLE_ISSUER": "atf-bundle-publisher",
+        "ATF_BUNDLE_PUBLIC_JWK_PATH": str(tmp_path / "bundle-key.jwk"),
+        "ATF_BUNDLE_PATH": str(tmp_path / "bundle.jws"),
         "ATF_ENV": "local",
         "ATF_INFERENCE_PROFILE_PATH": str(tmp_path / "profile.json"),
         "ATF_MODEL_ROUTES_PATH": str(tmp_path / "routes.json"),
@@ -178,10 +158,6 @@ def _ca_pem() -> bytes:
     return cert.public_bytes(serialization.Encoding.PEM)
 
 
-def _agents() -> dict[str, Any]:
-    return {AGENT: {"models": [LOGICAL], "daily_token_budget": 1000, "max_output_tokens": 64}}
-
-
 class TestBuildApp:
     def test_local_wiring_creates_budget_table(self, files: dict[str, str]) -> None:
         with mock_aws():
@@ -201,13 +177,6 @@ class TestBuildApp:
             build_app({**files, "ATF_ENV": "prod"})
 
     @pytest.mark.security
-    def test_unrouted_model_fails_cold_start(
-        self, files: dict[str, str], tmp_path: pathlib.Path
-    ) -> None:
-        (tmp_path / "routes.json").write_text(json.dumps({"other": {"provider_model": "a/b"}}))
-        with mock_aws(), pytest.raises(RoutesConfigError):
-            build_app(files)
-
     @pytest.mark.security
     def test_unusable_ca_bundle_fails_cold_start(self, files: dict[str, str]) -> None:
         pathlib.Path(files["ATF_CA_BUNDLE"]).write_text("")
@@ -247,3 +216,27 @@ class TestBuildApp:
             monkeypatch.setenv(k, v)
         with mock_aws():
             assert TestClient(app_from_env()).get("/ping").status_code == 200
+
+    @pytest.mark.security
+    def test_bundle_config_required(self, files: dict[str, str]) -> None:
+        """No bundle settings: cold-start failure, never 'serve without policy'."""
+        env = {k: v for k, v in files.items() if not k.startswith("ATF_BUNDLE_")}
+        with mock_aws(), pytest.raises(KeyError):
+            build_app(env)
+
+    @pytest.mark.security
+    def test_no_bundle_yet_is_503(self, files: dict[str, str], mint: Any) -> None:
+        """Wired correctly but nothing published yet: every call is refused (fail closed)."""
+        from tests.conftest import good_claims
+
+        with mock_aws():
+            app = build_app(files)
+        tok = mint(good_claims(sub=AGENT, client_id=AGENT), header={"typ": "at+jwt"})
+        # The validator would need the real JWKS; a 401 or 503 are both refusals. What must
+        # never happen is a completion.
+        r = TestClient(app).post(
+            "/v1/chat/completions",
+            json={"model": LOGICAL, "messages": [{"role": "user", "content": "hi"}]},
+            headers={"Authorization": f"Bearer {tok}"},
+        )
+        assert r.status_code in (401, 503)

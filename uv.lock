@@ -249,6 +249,7 @@ dependencies = [
     { name = "trustkit" },
     { name = "trustkit-aws" },
     { name = "trustkit-http" },
+    { name = "trustkit-policy" },
     { name = "uvicorn" },
 ]
 
@@ -260,6 +261,7 @@ requires-dist = [
     { name = "trustkit", editable = "packages/trustkit" },
     { name = "trustkit-aws", editable = "packages/trustkit_aws" },
     { name = "trustkit-http", editable = "packages/trustkit_http" },
+    { name = "trustkit-policy", editable = "packages/trustkit_policy" },
     { name = "uvicorn", specifier = ">=0.30" },
 ]
 
@@ -271,6 +273,7 @@ dependencies = [
     { name = "trustkit" },
     { name = "trustkit-aws" },
     { name = "trustkit-http" },
+    { name = "trustkit-policy" },
 ]
 
 [package.metadata]
@@ -278,6 +281,7 @@ requires-dist = [
     { name = "trustkit", editable = "packages/trustkit" },
     { name = "trustkit-aws", editable = "packages/trustkit_aws" },
     { name = "trustkit-http", editable = "packages/trustkit_http" },
+    { name = "trustkit-policy", editable = "packages/trustkit_policy" },
 ]
 
 [[package]]
@@ -291,6 +295,7 @@ dependencies = [
     { name = "trustkit" },
     { name = "trustkit-aws" },
     { name = "trustkit-http" },
+    { name = "trustkit-policy" },
     { name = "uvicorn" },
 ]
 
@@ -302,6 +307,7 @@ requires-dist = [
     { name = "trustkit", editable = "packages/trustkit" },
     { name = "trustkit-aws", editable = "packages/trustkit_aws" },
     { name = "trustkit-http", editable = "packages/trustkit_http" },
+    { name = "trustkit-policy", editable = "packages/trustkit_policy" },
     { name = "uvicorn", specifier = ">=0.30" },
 ]
 

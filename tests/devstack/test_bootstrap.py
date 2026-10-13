@@ -126,9 +126,10 @@ class TestPhase3Material:
     def test_all_client_keys_and_mcp_egress_profile(self, result: BootstrapResult) -> None:
         assert set(result.client_keys) == {"chat", "agent", "gateway", "admin-alice", "admin-bob"}
         doc = json.loads((result.out_dir / "mcp-egress.json").read_text())
-        reg = load_profiles(json.dumps({"version": 1, "profiles": [doc]}))
+        assert "agents" not in doc  # ADR-0022: grants come from the bundle
+        per_server = {**doc, "server_id": "tickets"}  # as the gateway builds it per record
+        reg = load_profiles(json.dumps({"version": 1, "profiles": [per_server]}))
         assert reg.rejected == {}
-        assert "0oa-agent-alpha" in (reg.lookup("mcp-gateway").agents or {})
 
     def test_topology_has_distinct_admin_clients(self, result: BootstrapResult) -> None:
         topo = json.loads(result.topology.read_text())
@@ -146,15 +147,14 @@ class TestPhase3Material:
 class TestInferenceMaterial:
     def test_inference_profile_and_routes_load(self, result: BootstrapResult) -> None:
         from atf_inference_gateway.policy import load_inference_profile
-        from atf_inference_gateway.routes import check_coverage, load_routes
+        from atf_inference_gateway.routes import load_routes
 
         profile = load_inference_profile((result.out_dir / "inference-profile.json").read_bytes())
         routes = load_routes(
             (result.out_dir / "model-routes.json").read_bytes(), env={"ATF_ENV": "local"}
         )
-        check_coverage(profile, routes)
+        assert "claude-sonnet" in routes
         assert profile.inbound.audiences == frozenset({"api://inference-gateway"})
-        assert "0oa-agent-alpha" in profile.agents
 
     def test_inference_as_is_separate_from_workload_as(self, result: BootstrapResult) -> None:
         topo = json.loads(result.topology.read_text())

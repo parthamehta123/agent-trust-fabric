@@ -8,6 +8,7 @@ dependencies = [
     "fastapi>=0.115",
     "httpx>=0.27",
     "trustkit",
+    "trustkit-policy",
     "trustkit-aws",
     "trustkit-http",
     "uvicorn>=0.30",
@@ -22,5 +23,6 @@ packages = ["src/atf_mcp_gateway"]
 
 [tool.uv.sources]
 trustkit = { workspace = true }
+trustkit-policy = { workspace = true }
 trustkit-http = { workspace = true }
 trustkit-aws = { workspace = true }

@@ -27,14 +27,11 @@ from dataclasses import dataclass, field
 from enum import StrEnum
 
 from trustkit.jwt import (
-    KeyResolver,
     Reason,
     TokenValidationError,
     TokenValidator,
-    ValidationPolicy,
     VerifiedToken,
 )
-from trustkit.profiles import GatewayProfile
 
 
 class BindingReason(StrEnum):
@@ -211,35 +208,3 @@ def bind_actor(
         raw_workload=workload_token,
         raw_subject=subject_token,
     )
-
-
-def actor_policies(
-    profile: GatewayProfile,
-    jwks: Callable[[str], KeyResolver],
-    *,
-    now: Callable[[], int] | None = None,
-) -> tuple[TokenValidator, dict[str, AgentPolicy]]:
-    """Validators for ``bind_actor`` from an egress profile (ADR-0016 §4). Shared by the
-    interceptor and the MCP gateway so the binding rules exist in exactly one place."""
-    ei, agents = profile.egress_inbound, profile.agents
-    if ei is None or agents is None:
-        raise ValueError("profile is not an egress profile")
-    workload = TokenValidator(
-        ValidationPolicy(issuer=ei.issuer, audiences=ei.audiences, expected_typ="at+jwt"),
-        jwks(ei.jwks_uri),
-        now=now,
-    )
-    policies = {
-        cid: AgentPolicy(
-            TokenValidator(
-                ValidationPolicy(
-                    issuer=a.t2_issuer, audiences=frozenset({a.t2_audience}), expected_typ="at+jwt"
-                ),
-                jwks(a.t2_jwks_uri),
-                now=now,
-            ),
-            a.allowed_scopes,
-        )
-        for cid, a in agents.items()
-    }
-    return workload, policies

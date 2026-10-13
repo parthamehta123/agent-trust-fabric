@@ -33,10 +33,12 @@ from atf_mcp_gateway.admin import (
     AdminService,
     authorize_admin,
 )
-from atf_mcp_gateway.proxy import McpProxy
+from atf_mcp_gateway.proxy import Authorizer, McpProxy
 from atf_mcp_gateway.servers import Delegation, ServerRecord
 from trustkit.binding import ActorBinding, ActorBindingError
+from trustkit.exchange import KeyResolverFactory
 from trustkit.jwt import TokenValidator
+from trustkit_policy.bundle import LoadedBundle
 
 _ADMIN_STATUS: Final = {
     AdminFailure.UNAUTHORIZED: 401,
@@ -69,6 +71,74 @@ def _rpc_error(status: int, code: int, message: str) -> JSONResponse:
     return JSONResponse(body, status_code=status, headers=headers)
 
 
+class PolicyUnavailableError(Exception):
+    """No fresh policy bundle: every call is refused with 503 (ADR-0022 §6)."""
+
+
+def bundle_binder(
+    policy: Callable[[], LoadedBundle | None],
+    workload_validator: TokenValidator,
+    jwks: KeyResolverFactory,
+    now: Callable[[], int],
+) -> Binder:
+    """``bind_actor`` with agents from the bundle (any grant with tools and a T2 binding).
+    No fresh bundle -> ``PolicyUnavailableError``."""
+    from trustkit.binding import bind_actor
+    from trustkit_policy.runtime import actor_policies_from_bundle
+
+    def binder(headers: Mapping[str, str]) -> ActorBinding:
+        auth, subject = headers.get("authorization", ""), headers.get("x-subject-token")
+        if not auth.startswith("Bearer ") or not subject:
+            raise ValueError("missing credentials")
+        loaded = policy()
+        if loaded is None:
+            raise PolicyUnavailableError
+        agents = actor_policies_from_bundle(
+            loaded,
+            jwks,
+            # Union of all granted tool scopes; per-server narrowing happens in the authorizer.
+            scopes_for=lambda g: frozenset().union(*g.tools.values()),
+            now=now,
+        )
+        return bind_actor(
+            auth.removeprefix("Bearer "),
+            subject,
+            workload_validator=workload_validator,
+            agents=agents,
+        )
+
+    return binder
+
+
+def bundle_authorizer(
+    policy: Callable[[], LoadedBundle | None], now: Callable[[], int]
+) -> Authorizer:
+    """Requested = grant.tools[server] ∩ record.scopes; Cedar ``invoke_tool`` must allow it with
+    the record's delegation mode and the user's T2 scopes. Anything else -> ``None`` (deny)."""
+    from trustkit_policy.runtime import tool_decision, user_scopes
+
+    def authorize(binding: ActorBinding, record: ServerRecord) -> frozenset[str] | None:
+        loaded = policy()  # re-read per call: a revocation since binding takes effect now
+        if loaded is None:
+            return None
+        grant = loaded.grant(binding.agent_client_id, now())
+        if grant is None:
+            return None
+        requested = grant.tools.get(record.server_id, frozenset()) & record.scopes
+        decision = tool_decision(
+            loaded,
+            agent_id=binding.agent_client_id,
+            user=binding.subject,
+            user_scopes=user_scopes(binding.subject_token),
+            server_id=record.server_id,
+            delegation=record.delegation.value,
+            requested=requested,
+        )
+        return requested if decision.allowed else None
+
+    return authorize
+
+
 def create_data_app(proxy: McpProxy, binder: Binder) -> FastAPI:
     app = FastAPI(title="mcp-gateway (data plane)", docs_url=None, redoc_url=None)
 
@@ -79,6 +149,8 @@ def create_data_app(proxy: McpProxy, binder: Binder) -> FastAPI:
             return _rpc_error(400, -32600, "invalid request")
         try:
             binding = await run_in_threadpool(binder, headers)
+        except PolicyUnavailableError:
+            return _rpc_error(503, -32002, "policy unavailable")
         except (ActorBindingError, ValueError):
             return _rpc_error(401, -32001, "unauthorized")
         try:
@@ -266,24 +338,29 @@ def _common(env: Mapping[str, str]) -> dict[str, Any]:
 
 def build_data_app(env: Mapping[str, str]) -> FastAPI:
     import pathlib
+    import sys
+    import time
 
     import boto3
 
     from atf_mcp_gateway.credentials import GatewayCredentials
-    from trustkit.binding import actor_policies, bind_actor
+    from trustkit.audit import JsonLinesSink
     from trustkit.breaker import BreakerRegistry
     from trustkit.exchange import IdJagExchanger
-    from trustkit.profiles import load_profiles
+    from trustkit.jwt import ValidationPolicy
+    from trustkit.profiles import EgressInbound
     from trustkit.scanning import LocalRulesScanner
+    from trustkit_aws.s3_bundles import s3_source_factory
     from trustkit_aws.signers import make_signer_factory
+    from trustkit_policy.runtime import policy_from_env
 
     c = _common(env)
     egress_doc = json.loads(pathlib.Path(env["ATF_EGRESS_PROFILE_PATH"]).read_text())
-    registry = load_profiles(json.dumps({"version": 1, "profiles": [egress_doc]}))
-    if registry.rejected:
-        raise ValueError("egress profile invalid")
-    profile = registry.lookup(egress_doc["gateway_id"])
-    workload_v, agents = actor_policies(profile, c["jwks"])
+    ei = EgressInbound.model_validate_json(json.dumps(egress_doc["egress_inbound"]))
+    workload_v = TokenValidator(
+        ValidationPolicy(issuer=ei.issuer, audiences=ei.audiences, expected_typ="at+jwt"),
+        c["jwks"](ei.jwks_uri),
+    )
     exchanger = IdJagExchanger(
         http=c["http"], signers=make_signer_factory(env), jwks=c["jwks"], breakers=BreakerRegistry()
     )
@@ -292,22 +369,20 @@ def build_data_app(env: Mapping[str, str]) -> FastAPI:
         secrets=boto3.client("secretsmanager", region_name=c["region"]),
         egress_base=egress_doc,
     )
+    policy = policy_from_env(
+        env,
+        s3_factory=s3_source_factory(c["region"]),
+        audit=JsonLinesSink(sys.stdout),
+    )
+    now = lambda: int(time.time())  # noqa: E731
     proxy = McpProxy(
         store=c["store"],
         upstream=c["upstream"],
         credentials=credentials,
         scanner=LocalRulesScanner(),
+        authorize=bundle_authorizer(policy, now),
     )
-
-    def binder(headers: Mapping[str, str]) -> ActorBinding:
-        auth, subject = headers.get("authorization", ""), headers.get("x-subject-token")
-        if not auth.startswith("Bearer ") or not subject:
-            raise ValueError("missing credentials")
-        return bind_actor(
-            auth.removeprefix("Bearer "), subject, workload_validator=workload_v, agents=agents
-        )
-
-    return create_data_app(proxy, binder)
+    return create_data_app(proxy, bundle_binder(policy, workload_v, c["jwks"], now))
 
 
 def build_admin_app(env: Mapping[str, str]) -> FastAPI:

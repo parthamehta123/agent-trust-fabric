@@ -110,17 +110,6 @@ class EgressInbound(_Strict):
     jwks_uri: HttpsUrl
 
 
-class AgentBinding(_Strict):
-    """Which T2 an agent may present, and what it may ask tools for (ADR-0016 §4, §7).
-
-    Interim: Phase 4 replaces this map with registry lookups."""
-
-    t2_issuer: HttpsUrl
-    t2_audience: Annotated[str, StringConstraints(min_length=1, max_length=512)]
-    t2_jwks_uri: HttpsUrl
-    allowed_scopes: Annotated[frozenset[Scope], Field(min_length=1)]
-
-
 class Target(_Strict):
     audience: Annotated[str, StringConstraints(min_length=1, max_length=512)]
     scopes: Annotated[frozenset[Scope], Field(min_length=1)]
@@ -141,12 +130,13 @@ class GatewayProfile(_Strict):
     """``False`` only for egress profiles, where scanning moves into the inference gateway
     (ADR-0012 §6). Ingress responses are always scanned."""
 
-    # Egress only (ADR-0016): the *tool gateway's* own client, the inbound workload-token
-    # policy, and the agents allowed through this gateway. Required for egress, forbidden for
-    # ingress.
+    # Egress only (ADR-0016, ADR-0022): the *tool gateway's* own client, the inbound
+    # workload-token policy, and the registry name of this target. Which agents may use it,
+    # with which scopes, comes from the signed policy bundle. Required for egress, forbidden
+    # for ingress.
     client: ClientAuth | None = None
     egress_inbound: EgressInbound | None = None
-    agents: Annotated[dict[ClientId, AgentBinding], Field(min_length=1)] | None = None
+    server_id: Annotated[str, StringConstraints(pattern=r"^[a-z0-9][a-z0-9-]{1,62}$")] | None = None
 
     # Ingress only (ADR-0006, ADR-0009). Required for ingress, forbidden for egress.
     ingress_clients: Annotated[dict[ClientId, KeyRef], Field(min_length=1)] | None = None
@@ -158,14 +148,14 @@ class GatewayProfile(_Strict):
     @model_validator(mode="after")
     def _flow_specific_fields(self) -> Self:
         ingress_fields = (self.ingress_clients, self.max_auth_age_s, self.ingress_token)
-        egress_fields = (self.client, self.egress_inbound, self.agents)
+        egress_fields = (self.client, self.egress_inbound, self.server_id)
         if self.flow is Flow.INGRESS:
             if any(f is None for f in ingress_fields) or any(f is not None for f in egress_fields):
                 raise ValueError("ingress: needs ingress_clients/max_auth_age_s/ingress_token only")
             if not self.response_body_scan:
                 raise ValueError("ingress: response_body_scan cannot be disabled")
         elif any(f is not None for f in ingress_fields) or any(f is None for f in egress_fields):
-            raise ValueError("egress: needs client/egress_inbound/agents, no ingress-only fields")
+            raise ValueError("egress: needs client/egress_inbound/server_id only")
         return self
 
 

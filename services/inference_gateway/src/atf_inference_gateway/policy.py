@@ -1,4 +1,4 @@
-"""Inference profile: inbound workload-token policy + per-agent model policy (ADR-0019 §3-§4)."""
+"""Inference profile: inbound workload-token policy and scanner settings (ADR-0019, ADR-0022)."""
 
 from __future__ import annotations
 
@@ -27,18 +27,11 @@ class Inbound(_Strict):
     jwks_uri: HttpsUrl
 
 
-class AgentModelPolicy(_Strict):
-    models: Annotated[frozenset[ModelId], Field(min_length=1)]
-    daily_token_budget: Annotated[int, Field(gt=0, le=1_000_000_000)]
-    max_output_tokens: Annotated[int, Field(gt=0, le=MAX_OUTPUT_TOKENS_CEILING)]
-
-
 class InferenceProfile(_Strict):
+    """Gateway-level settings only. Which agents may call which models, with which budgets,
+    comes from the signed policy bundle (ADR-0022)."""
+
     inbound: Inbound
-    agents: Annotated[
-        dict[Annotated[str, StringConstraints(min_length=1, max_length=256)], AgentModelPolicy],
-        Field(min_length=1),
-    ]
     scanner_failure_mode: ScannerFailureMode = ScannerFailureMode.CLOSED
     scanner_timeout_ms: Annotated[int, Field(gt=0, le=2_000)] = 800
 
@@ -61,7 +54,6 @@ def load_inference_profile(raw: str | bytes) -> InferenceProfile:
 
 
 __all__ = [
-    "AgentModelPolicy",
     "Inbound",
     "InferenceProfile",
     "ProfileConfigError",

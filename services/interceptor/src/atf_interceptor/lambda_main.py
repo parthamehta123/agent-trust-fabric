@@ -34,8 +34,10 @@ from trustkit.jwt import JwksKeyResolver, KeyResolver
 from trustkit.profiles import load_profiles
 from trustkit.scanning import LocalRulesScanner
 from trustkit.signing import KeySigner
+from trustkit_aws.s3_bundles import s3_source_factory
 from trustkit_aws.signers import make_signer_factory
 from trustkit_http.endpoint import HttpxTokenEndpoint
+from trustkit_policy.runtime import policy_from_env
 
 __all__ = ["build_handler", "handler", "make_signer_factory"]
 
@@ -91,6 +93,17 @@ def build_handler(env: Mapping[str, str]) -> Handler:
             jwks=jwks,
             breakers=BreakerRegistry(on_transition=on_transition),
         )
+        # Egress needs the signed policy bundle (ADR-0022). Ingress-only deployments don't set
+        # it; without it every egress request is denied (fail closed), never allowed.
+        policy = (
+            policy_from_env(
+                env,
+                s3_factory=s3_source_factory(env.get("AWS_REGION", "us-east-1")),
+                audit=sink,
+            )
+            if "ATF_BUNDLE_ISSUER" in env
+            else (lambda: None)
+        )
         deps = InterceptorDeps(
             profiles=lambda: registry,
             exchanger=exchanger,
@@ -99,6 +112,7 @@ def build_handler(env: Mapping[str, str]) -> Handler:
             audit=sink,
             now=lambda: int(time.time()),
             monotonic=time.monotonic,
+            policy=policy,
         )
         return make_handler(deps)
     except Exception:  # noqa: BLE001 - any wiring failure -> deny-all handler (fail closed)

@@ -42,10 +42,8 @@ from trustkit.audit import AuditEvent, AuditSink, Decision, jti_hash
 from trustkit.binding import (
     ActorBinding,
     ActorBindingError,
-    AgentPolicy,
     BindingError,
     BoundIdentity,
-    actor_policies,
     bind,
     bind_actor,
 )
@@ -66,6 +64,8 @@ from trustkit.scanning import (
     failure_outcome,
     scan_with_policy,
 )
+from trustkit_policy.bundle import LoadedBundle
+from trustkit_policy.runtime import actor_policies_from_bundle, tool_decision, user_scopes
 
 RESERVED_HEADERS: Final = tuple(sorted(policy.RESERVED_HEADERS))
 """Always set on every forwarded request (ADR-0012 §4). Advisory only: runtimes trust T2 claims."""
@@ -104,6 +104,8 @@ class InterceptorDeps:
     deadline_s: float = 4.0
     """Internal budget. Kept below the Lambda timeout so slow dependencies become explicit
     denies."""
+    policy: Callable[[], LoadedBundle | None] = lambda: None
+    """Current verified policy bundle (ADR-0022). ``None`` = no fresh bundle: egress denies."""
 
 
 Handler = Callable[[Mapping[str, Any], Any], dict[str, Any]]
@@ -165,27 +167,20 @@ def make_handler(deps: InterceptorDeps) -> Handler:
             validators[key] = (at_v, idt_v)
         return validators[key]
 
-    actor_cache: dict[tuple[str, ...], tuple[TokenValidator, dict[str, AgentPolicy]]] = {}
+    workload_cache: dict[tuple[str, ...], TokenValidator] = {}
 
-    def actor_validators(
-        profile: GatewayProfile,
-    ) -> tuple[TokenValidator, dict[str, AgentPolicy]]:
-        ei, agents = profile.egress_inbound, profile.agents
-        if ei is None or agents is None:  # schema guarantees this; never rely on assert (-O)
+    def workload_validator(profile: GatewayProfile) -> TokenValidator:
+        ei = profile.egress_inbound
+        if ei is None:  # schema guarantees this; never rely on assert (-O)
             raise _Deny(503, "profile_invalid")
-        key = (
-            profile.profile_id,
-            ei.issuer,
-            ei.jwks_uri,
-            *sorted(ei.audiences),
-            *sorted(
-                f"{cid}|{a.t2_issuer}|{a.t2_audience}|{a.t2_jwks_uri}|{','.join(sorted(a.allowed_scopes))}"
-                for cid, a in agents.items()
-            ),
-        )
-        if key not in actor_cache:
-            actor_cache[key] = actor_policies(profile, deps.jwks, now=deps.now)
-        return actor_cache[key]
+        key = (profile.profile_id, ei.issuer, ei.jwks_uri, *sorted(ei.audiences))
+        if key not in workload_cache:
+            workload_cache[key] = TokenValidator(
+                ValidationPolicy(issuer=ei.issuer, audiences=ei.audiences, expected_typ="at+jwt"),
+                deps.jwks(ei.jwks_uri),
+                now=deps.now,
+            )
+        return workload_cache[key]
 
     def handler(event: Mapping[str, Any], context: Any) -> dict[str, Any]:
         request_id = request_id_from_context(context)
@@ -204,7 +199,7 @@ def make_handler(deps: InterceptorDeps) -> Handler:
             ev = _parse(event)
             shape, jsonrpc_id = ev.shape, ev.jsonrpc_id
             output, decision, reason, event_type = _decide(
-                call, ev, binding_validators, actor_validators
+                call, ev, binding_validators, workload_validator
             )
         except _Deny as d:
             output = deny(shape, status=d.status, request_id=request_id, jsonrpc_id=jsonrpc_id)
@@ -264,7 +259,7 @@ def _decide(
     call: _Call,
     ev: InterceptorEvent,
     binding_validators: Callable[[GatewayProfile], tuple[TokenValidator, TokenValidator]],
-    actor_validators: Callable[[GatewayProfile], tuple[TokenValidator, dict[str, AgentPolicy]]],
+    workload_validator: Callable[[GatewayProfile], TokenValidator],
 ) -> tuple[dict[str, Any], Decision, str, str]:
     deps = call.deps
     gateway_id = gateway_id_from_context(call.context)
@@ -284,7 +279,7 @@ def _decide(
     if ev.phase is Phase.RESPONSE:
         return _decide_response(call, ev, profile)
     if profile.flow is Flow.EGRESS:
-        return _decide_egress_request(call, ev, profile, actor_validators)
+        return _decide_egress_request(call, ev, profile, workload_validator)
     return _decide_ingress_request(call, ev, profile, binding_validators)
 
 
@@ -343,9 +338,10 @@ def _decide_egress_request(
     call: _Call,
     ev: InterceptorEvent,
     profile: GatewayProfile,
-    actor_validators: Callable[[GatewayProfile], tuple[TokenValidator, dict[str, AgentPolicy]]],
+    workload_validator: Callable[[GatewayProfile], TokenValidator],
 ) -> tuple[dict[str, Any], Decision, str, str]:
-    """ADR-0016: workload token (actor) + T2 (subject) -> delegated tool token with ``act``."""
+    """ADR-0016, ADR-0022: workload token (actor) + T2 (subject), authorized by the signed
+    policy bundle and Cedar, -> delegated tool token with ``act``."""
     deps = call.deps
     if ev.headers is None:
         raise _Deny(503, "headers_not_passed")
@@ -354,10 +350,23 @@ def _decide_egress_request(
     if m is None or not subject_token:
         raise _Deny(401, "missing_credentials")
 
-    workload_v, agents = actor_validators(profile)
+    loaded = deps.policy()
+    server_id = profile.server_id
+    if loaded is None or server_id is None:
+        raise _Deny(503, "policy_unavailable")  # no fresh bundle: fail closed (ADR-0022 §6)
+    target_scopes = profile.target.scopes
+    agents = actor_policies_from_bundle(
+        loaded,
+        deps.jwks,
+        scopes_for=lambda g: g.tools.get(server_id, frozenset()) & target_scopes,
+        now=deps.now,
+    )
     try:
         binding = bind_actor(
-            m.group(1), subject_token, workload_validator=workload_v, agents=agents
+            m.group(1),
+            subject_token,
+            workload_validator=workload_validator(profile),
+            agents=agents,
         )
     except ActorBindingError as e:
         raise _Deny(401, f"actor_binding:{e.reason.value}") from None
@@ -367,6 +376,18 @@ def _decide_egress_request(
         at_jti_sha256=jti_hash(binding.subject_token.jti),
         actor_jti_sha256=jti_hash(binding.workload.jti),
     )
+    decision = tool_decision(
+        loaded,
+        agent_id=binding.agent_client_id,
+        user=binding.subject,
+        user_scopes=user_scopes(binding.subject_token),
+        server_id=server_id,
+        delegation="token",
+        requested=binding.allowed_scopes,
+    )
+    call.fields["policy_ids"] = decision.policy_ids
+    if not decision.allowed:
+        raise _Deny(403, "policy_denied")
     call.check_deadline()
 
     try:

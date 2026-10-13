@@ -74,3 +74,18 @@ def test_unreachable_is_error_not_absent() -> None:
 
     with pytest.raises(S3BundleError):
         S3BundleSource(Down(), bucket=BUCKET, key=KEY, max_bytes=10).fetch()  # type: ignore[arg-type]
+
+
+def test_factory_builds_capped_source(s3: Any) -> None:
+    from trustkit_aws.s3_bundles import s3_source_factory
+
+    s3.put_object(Bucket=BUCKET, Key=KEY, Body=b"x")
+    assert s3_source_factory("us-east-1")(BUCKET, KEY).fetch() == b"x"
+
+
+def test_size_constant_matches_policy_package() -> None:
+    """Drift guard: the S3 cap mirrors the verifier's cap (kept local to avoid a dependency)."""
+    from trustkit_aws.s3_bundles import MAX_BUNDLE_BYTES as AWS_MAX
+    from trustkit_policy.bundle import MAX_BUNDLE_BYTES as POLICY_MAX
+
+    assert AWS_MAX == POLICY_MAX

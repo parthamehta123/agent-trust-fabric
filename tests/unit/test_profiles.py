@@ -44,11 +44,11 @@ EXPECTED_REASON = {
     "ingress-missing-auth-age": "<profile>: value_error",
     "ingress-with-agent-client": "<profile>: value_error",
     "egress-missing-client": "<profile>: value_error",
-    "egress-missing-agents": "<profile>: value_error",
-    "egress-empty-agents": "agents",
+    "egress-missing-server-id": "<profile>: value_error",
+    "egress-bad-server-id": "server_id",
     "egress-missing-inbound": "<profile>: value_error",
-    "egress-agent-wildcard-scope": "agents.0oa-agent-alpha.allowed_scopes",
-    "ingress-with-agents": "<profile>: value_error",
+    "egress-legacy-agents-map": "agents",
+    "ingress-with-server-id": "<profile>: value_error",
     "ingress-missing-token-config": "<profile>: value_error",
     "ingress-scan-disabled": "<profile>: value_error",
     "ingress-token-no-audience": "ingress_token.audiences",
@@ -95,14 +95,7 @@ def egress_profile(**overrides: Any) -> dict[str, Any]:
         "audiences": ["api://tool-gateway"],
         "jwks_uri": "https://idp.example.test/oauth2/workload/v1/keys",
     }
-    p["agents"] = {
-        "0oa-agent-alpha": {
-            "t2_issuer": "https://idp.example.test/oauth2/agent-alpha",
-            "t2_audience": "api://agent-alpha",
-            "t2_jwks_uri": "https://idp.example.test/oauth2/agent-alpha/v1/keys",
-            "allowed_scopes": ["tickets.read"],
-        }
-    }
+    p["server_id"] = "tickets"
     p.update(overrides)
     return p
 
@@ -273,16 +266,15 @@ class TestPerProfileRejection:
                 id="ingress-with-agent-client",
             ),
             pytest.param(egress_profile(client=None), id="egress-missing-client"),
-            pytest.param(egress_profile(agents=None), id="egress-missing-agents"),
-            pytest.param(egress_profile(agents={}), id="egress-empty-agents"),
+            pytest.param(egress_profile(server_id=None), id="egress-missing-server-id"),
+            pytest.param(egress_profile(server_id="Bad ID"), id="egress-bad-server-id"),
             pytest.param(egress_profile(egress_inbound=None), id="egress-missing-inbound"),
             pytest.param(
-                with_nested(egress_profile(), "agents.0oa-agent-alpha.allowed_scopes", ["*"]),
-                id="egress-agent-wildcard-scope",
+                # ADR-0022: agent grants come from the signed bundle; a stale map is rejected.
+                egress_profile(agents={"0oa-agent-alpha": {"allowed_scopes": ["*"]}}),
+                id="egress-legacy-agents-map",
             ),
-            pytest.param(
-                ingress_profile(agents=egress_profile()["agents"]), id="ingress-with-agents"
-            ),
+            pytest.param(ingress_profile(server_id="tickets"), id="ingress-with-server-id"),
             pytest.param(ingress_profile(ingress_token=None), id="ingress-missing-token-config"),
             pytest.param(ingress_profile(response_body_scan=False), id="ingress-scan-disabled"),
             pytest.param(

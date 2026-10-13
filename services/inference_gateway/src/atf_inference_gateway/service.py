@@ -11,7 +11,13 @@ from typing import Any, Final
 
 from atf_inference_gateway.budget import BudgetStore, BudgetUnavailableError, estimate_tokens
 from atf_inference_gateway.policy import InferenceProfile
+from trustkit.profiles import ScannerFailureMode
 from trustkit.scanning import ContentScanner, Direction, Verdict, scan_with_policy
+from trustkit_policy.bundle import LoadedBundle
+from trustkit_policy.grants import ModelGrant
+from trustkit_policy.pdp import DecisionRequest, Resource
+from trustkit_policy.runtime import effective_fail_mode
+from trustkit_policy.schema import Action, ResourceType
 
 _ALLOWED_KEYS: Final = frozenset({"model", "messages", "max_tokens", "temperature", "stream"})
 _ROLES: Final = frozenset({"system", "user", "assistant"})
@@ -37,8 +43,9 @@ class ChatError(Exception):
 
 
 class InferenceService:
-    """``chat`` order: shape -> agent policy -> model allowlist -> clamp -> prompt scan ->
-    reserve budget -> call -> (release on failure) -> completion scan -> settle -> respond."""
+    """``chat`` order: shape -> bundle grant + Cedar ``call_model`` -> clamp -> prompt scan ->
+    reserve (agent, model) budget -> call -> (release on failure) -> settle -> completion scan
+    -> respond."""
 
     def __init__(
         self,
@@ -48,29 +55,54 @@ class InferenceService:
         scanner: ContentScanner,
         complete: CompletionFn,
         today: Callable[[], str],
+        policy: Callable[[], LoadedBundle | None],
+        routable: frozenset[str],
+        now: Callable[[], int] = lambda: int(time.time()),
     ) -> None:
         self._profile, self._budget, self._scanner = profile, budget, scanner
         self._complete, self._today = complete, today
+        self._policy, self._routable, self._now = policy, routable, now
+
+    def _authorize(self, agent: str, model: str) -> tuple[ModelGrant, ScannerFailureMode]:
+        """Bundle + Cedar ``call_model`` (ADR-0022). Raises ``ChatError``:
+        503 ``policy_unavailable``, 403 ``agent_not_allowed`` / ``model_not_allowed``.
+        Returns the model grant (budget, max tokens) and the effective scanner fail mode."""
+        loaded = self._policy()
+        if loaded is None:
+            raise ChatError(503, "policy_unavailable")  # no fresh bundle: fail closed
+        grant = loaded.grant(agent, self._now())
+        if grant is None:
+            raise ChatError(403, "agent_not_allowed")
+        model_grant = grant.models.get(model)
+        if model_grant is None or model not in self._routable:
+            raise ChatError(403, "model_not_allowed")
+        decision = loaded.pdp.decide(
+            DecisionRequest(
+                agent_id=agent,
+                action=Action.CALL_MODEL,
+                resource=Resource(ResourceType.MODEL, model),
+            )
+        )
+        if not decision.allowed:
+            raise ChatError(403, "model_not_allowed")
+        return model_grant, effective_fail_mode(
+            self._profile.scanner_failure_mode, grant.scanner_failure_mode
+        )
 
     def chat(self, agent: str, request: Mapping[str, Any]) -> dict[str, Any]:
         """OpenAI-compatible response dict, or raises ``ChatError``."""
         model, messages, max_tokens, temperature = _parse(request)
-        policy = self._profile.agents.get(agent)
-        if policy is None:
-            raise ChatError(403, "agent_not_allowed")
-        if model not in policy.models:
-            raise ChatError(403, "model_not_allowed")  # before any provider call (TM-INF-01)
-        clamped = min(max_tokens or policy.max_output_tokens, policy.max_output_tokens)
+        grant, fail_mode = self._authorize(agent, model)  # before any provider call (TM-INF-01)
+        clamped = min(max_tokens or grant.max_output_tokens, grant.max_output_tokens)
 
-        if (
-            self._scan("\n".join(m["content"] for m in messages), Direction.REQUEST)[0]
-            is not Verdict.ALLOW
-        ):
+        prompt = "\n".join(m["content"] for m in messages)
+        if self._scan(prompt, Direction.REQUEST, fail_mode)[0] is not Verdict.ALLOW:
             raise ChatError(403, "prompt_blocked")  # before any spend (TM-INF-03)
 
-        day, estimate = self._today(), estimate_tokens(messages, clamped)
+        # Budgets are granted per model (ADR-0021 §3), so the counter is per agent and model.
+        key, day, estimate = f"{agent}#{model}", self._today(), estimate_tokens(messages, clamped)
         try:
-            reserved = self._budget.reserve(agent, day, estimate, policy.daily_token_budget)
+            reserved = self._budget.reserve(key, day, estimate, grant.daily_token_budget)
         except BudgetUnavailableError:
             raise ChatError(503, "budget_unavailable") from None  # fail closed
         if not reserved:
@@ -80,13 +112,13 @@ class InferenceService:
             completion = self._complete(model, messages, clamped, temperature)
         except Exception:  # noqa: BLE001 - provider failures never leak details
             with contextlib.suppress(BudgetUnavailableError):
-                self._budget.adjust(agent, day, -estimate)
+                self._budget.adjust(key, day, -estimate)
             raise ChatError(502, "provider_error") from None
         actual = completion.prompt_tokens + completion.completion_tokens
         with contextlib.suppress(BudgetUnavailableError):
-            self._budget.adjust(agent, day, actual - estimate)
+            self._budget.adjust(key, day, actual - estimate)
 
-        verdict, redacted = self._scan(completion.text, Direction.RESPONSE)
+        verdict, redacted = self._scan(completion.text, Direction.RESPONSE, fail_mode)
         if verdict is Verdict.BLOCK:
             raise ChatError(502, "completion_blocked")
         text = redacted if verdict is Verdict.REDACT and redacted is not None else completion.text
@@ -109,12 +141,14 @@ class InferenceService:
             },
         }
 
-    def _scan(self, text: str, direction: Direction) -> tuple[Verdict, str | None]:
+    def _scan(
+        self, text: str, direction: Direction, failure_mode: ScannerFailureMode
+    ) -> tuple[Verdict, str | None]:
         outcome = scan_with_policy(
             self._scanner,
             text,
             direction=direction,
-            failure_mode=self._profile.scanner_failure_mode,
+            failure_mode=failure_mode,
             timeout_s=self._profile.scanner_timeout_ms / 1000,
         )
         return outcome.result.verdict, outcome.result.redacted_text

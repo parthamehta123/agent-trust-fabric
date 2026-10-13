@@ -13,8 +13,9 @@ The caller is already bound (workload token + T2, ``bind_actor``) by the HTTP sh
 
 from __future__ import annotations
 
+import dataclasses
 import json
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from typing import Any, Final, Protocol
 
 from atf_mcp_gateway.servers import Delegation, ServerRecord, ServerStore
@@ -48,6 +49,11 @@ class Upstream(Protocol):
     ) -> tuple[int, dict[str, Any] | None]: ...
 
 
+Authorizer = Callable[[ActorBinding, ServerRecord], frozenset[str] | None]
+"""Policy decision for one (agent, user, server): the scopes to request, or ``None`` = deny.
+Implemented over the signed bundle + Cedar in ``app`` (ADR-0022)."""
+
+
 class McpProxy:
     def __init__(
         self,
@@ -56,11 +62,13 @@ class McpProxy:
         upstream: Upstream,
         credentials: Credentials,
         scanner: ContentScanner,
+        authorize: Authorizer,
         failure_mode: ScannerFailureMode = ScannerFailureMode.CLOSED,
         scan_timeout_s: float = 0.8,
     ) -> None:
         self._store, self._upstream, self._creds = store, upstream, credentials
         self._scanner, self._mode, self._timeout = scanner, failure_mode, scan_timeout_s
+        self._authorize = authorize
 
     def handle(self, binding: ActorBinding, request: Mapping[str, Any]) -> dict[str, Any]:
         """One JSON-RPC request in, one JSON-RPC response out. Never raises."""
@@ -82,13 +90,20 @@ class McpProxy:
             return self._call(binding, request.get("params"))
         raise _RpcError(METHOD_NOT_FOUND, "method not found")
 
+    def _allowed(self, binding: ActorBinding, record: ServerRecord) -> frozenset[str] | None:
+        """The policy decision; any failure to decide is a deny (ADR-0022 §4)."""
+        try:
+            return self._authorize(binding, record)
+        except Exception:  # noqa: BLE001
+            return None
+
     def _list(self, binding: ActorBinding) -> list[dict[str, Any]]:
         out: list[dict[str, Any]] = []
         for record in sorted(self._store.list(), key=lambda r: r.server_id):
             if (
                 not record.callable
                 or record.current is None
-                or not (binding.allowed_scopes & record.scopes)
+                or self._allowed(binding, record) is None
             ):
                 continue
             out.extend(
@@ -116,9 +131,12 @@ class McpProxy:
             or not record.callable
             or record.current is None
             or tool not in record.current.names()
-            or not (binding.allowed_scopes & record.scopes)
         ):
             raise _RpcError(INVALID_PARAMS, "unknown tool")
+        requested = self._allowed(binding, record)
+        if requested is None:
+            raise _RpcError(INVALID_PARAMS, "unknown tool")  # same answer: no policy oracle
+        binding = dataclasses.replace(binding, allowed_scopes=requested)
 
         try:
             credential = (
