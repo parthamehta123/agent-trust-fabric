@@ -68,6 +68,17 @@ MOCK_MCP_HOST: Final = "mock-mcp.tools.internal"
 INFERENCE_AS: Final = "inference"
 INFERENCE_AUDIENCE: Final = "api://inference-gateway"
 LOGICAL_MODEL: Final = "claude-sonnet"
+REGISTRY_AS: Final = "registry"
+REGISTRY_AUDIENCE: Final = "api://agent-registry"
+REGISTRY_ADMINS: Final = {
+    # client id -> groups (ADR-0021 §2): author, approver, security approver.
+    "0oa-reg-dave": ("team-alpha",),
+    "0oa-reg-bob": ("atf-registry-approvers",),
+    "0oa-reg-carol": ("atf-security-approvers",),
+}
+ENTITLED_USERS: Final = ("00u-alice",)
+"""Users entitled to delegate ``tickets.read`` (ADR-0023 §1); everyone else is downscoped."""
+BUNDLE_ISSUER: Final = "atf-bundle-publisher"
 
 # key file name -> client id
 CLIENT_KEYS: Final = {
@@ -76,6 +87,9 @@ CLIENT_KEYS: Final = {
     "gateway": TOOL_GATEWAY_CLIENT_ID,
     "admin-alice": ADMIN_CLIENT_IDS[0],
     "admin-bob": ADMIN_CLIENT_IDS[1],
+    "reg-dave": "0oa-reg-dave",
+    "reg-bob": "0oa-reg-bob",
+    "reg-carol": "0oa-reg-carol",
 }
 
 DEFAULT_SERVICES: Final = (
@@ -87,6 +101,7 @@ DEFAULT_SERVICES: Final = (
     Service("mock-mcp", (MOCK_MCP_HOST,)),
     Service("inference-gateway", ("inference-gateway", "localhost")),
     Service("mock-llm", ("mock-llm",)),
+    Service("agent-registry", ("agent-registry", "localhost")),
 )
 
 
@@ -184,6 +199,19 @@ def bootstrap(
     _write(out_dir / "inference-profile.json", _json(_inference_profile(base)), 0o644)
     _write(out_dir / "model-routes.json", _json(_model_routes()), 0o644)
 
+    # Bundle signing key (ADR-0022 §7): only the publisher mounts this directory; gateways get
+    # the public JWK. Never under client-keys/ (which other containers mount files from).
+    signing_dir = out_dir / "bundle-signing"
+    signing_dir.mkdir(mode=0o700, exist_ok=True)
+    signing_dir.chmod(0o700)
+    bundle_key = ec.generate_private_key(ec.SECP256R1())
+    _write(signing_dir / "bundle.pem", _pem(bundle_key), 0o600)
+    bundle_jwk = es256_public_jwk(bundle_key.public_key())
+    _write(out_dir / "bundle-key.jwk", _json(bundle_jwk), 0o644)
+    bundles_dir = out_dir / "bundles"  # publisher writes, gateways mount read-only
+    bundles_dir.mkdir(mode=0o755, exist_ok=True)
+    bundles_dir.chmod(0o755)
+
     return BootstrapResult(
         out_dir=out_dir,
         ca_cert=ca_cert_path,
@@ -248,6 +276,12 @@ def _topology(base: str, jwks: Mapping[str, Mapping[str, str]]) -> dict[str, Any
                 "resource_audience": AGENT_AUDIENCE,
                 "clients": [FRONTEND_CLIENT_ID],
                 "agent_client_id": AGENT_CLIENT_ID,
+                "restricted_scopes": {"tickets.read": list(ENTITLED_USERS)},
+            },
+            {
+                "as_id": REGISTRY_AS,
+                "resource_audience": REGISTRY_AUDIENCE,
+                "clients": list(REGISTRY_ADMINS),
             },
             {
                 "as_id": WORKLOAD_AS,
@@ -271,7 +305,9 @@ def _topology(base: str, jwks: Mapping[str, Mapping[str, str]]) -> dict[str, Any
             },
         ],
         "clients": [
-            client(FRONTEND_CLIENT_ID, {f"{base}/oauth2/{AGENT}": ["agent.invoke"]}),
+            client(
+                FRONTEND_CLIENT_ID, {f"{base}/oauth2/{AGENT}": ["agent.invoke", "tickets.read"]}
+            ),
             client(
                 AGENT_CLIENT_ID,
                 {
@@ -283,6 +319,13 @@ def _topology(base: str, jwks: Mapping[str, Mapping[str, str]]) -> dict[str, Any
             *(
                 client(cid, {f"{base}/oauth2/{ADMIN_AS}": ["mcp.admin"]})
                 for cid in ADMIN_CLIENT_IDS
+            ),
+            *(
+                {
+                    **client(cid, {f"{base}/oauth2/{REGISTRY_AS}": ["registry.admin"]}),
+                    "groups": list(groups),
+                }
+                for cid, groups in REGISTRY_ADMINS.items()
             ),
         ],
     }
@@ -354,7 +397,8 @@ def _profiles(base: str) -> dict[str, Any]:
                     "resource_token_endpoint": f"{base}/oauth2/{AGENT}/v1/token",
                     "resource_jwks_uri": f"{base}/oauth2/{AGENT}/v1/keys",
                 },
-                "target": {"audience": AGENT_AUDIENCE, "scopes": ["agent.invoke"]},
+                # Downstream scopes the agent may use for the user; the IdP downscopes per user.
+                "target": {"audience": AGENT_AUDIENCE, "scopes": ["agent.invoke", "tickets.read"]},
                 "ingress_clients": {FRONTEND_CLIENT_ID: f"local:{FRONTEND_KEY_NAME}"},
                 "max_auth_age_s": 43_200,
                 "ingress_token": {

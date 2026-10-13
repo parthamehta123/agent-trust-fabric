@@ -62,17 +62,19 @@ def test_completion_end_to_end(http: httpx.Client) -> None:  # noqa: F811
 
 
 def test_budget_settled_in_dynamodb(http: httpx.Client) -> None:  # noqa: F811
-    assert chat(http, inference_token(http), "count me").status_code == 200
+    """One call moves the day's counter by actual usage, not by the 256-token reservation.
+    Measured as a delta so the test is repeatable on a long-running stack."""
     day = dt.datetime.now(dt.UTC).date().isoformat()
     code = (
         "import boto3;"
         "c=boto3.client('dynamodb',region_name='us-east-1');"
-        f"i=c.get_item(TableName='budgets',Key={{'pk':{{'S':'{AGENT}#{day}'}}}})['Item'];"
-        "print(i['used']['N'])"
+        f"i=c.get_item(TableName='budgets',Key={{'pk':{{'S':'{AGENT}#{MODEL}#{day}'}}}}).get('Item');"
+        "print(i['used']['N'] if i else 0)"
     )
-    used = int(_exec_py("inference-gateway", code))
-    # Settled to actual usage (mock reports a few tokens), not left at the 256-token reservation.
-    assert 0 < used < 256
+    before = int(_exec_py("inference-gateway", code))
+    assert chat(http, inference_token(http), "count me").status_code == 200
+    delta = int(_exec_py("inference-gateway", code)) - before
+    assert 0 < delta < 256
 
 
 @pytest.mark.security

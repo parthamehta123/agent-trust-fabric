@@ -43,7 +43,9 @@ def build_idp_from_topology(topology: Mapping[str, Any], *, base_url: str) -> Mo
         )
     for c in topology["clients"]:
         policy = {aud: frozenset(scopes) for aud, scopes in c.get("exchange_policy", {}).items()}
-        idp.register_client(ClientRegistration(c["client_id"], c["jwks"], policy))
+        idp.register_client(
+            ClientRegistration(c["client_id"], c["jwks"], policy, tuple(c.get("groups", ())))
+        )
     return idp
 
 

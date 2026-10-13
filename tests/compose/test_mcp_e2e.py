@@ -18,6 +18,7 @@ from typing import Any
 import httpx
 import pytest
 
+from tests.compose.conftest import MCP_SERVER_ID
 from trustkit.signing import InMemoryEs256Signer, build_client_assertion
 
 pytestmark = [
@@ -89,6 +90,7 @@ def workload_token(http: httpx.Client) -> str:
 
 
 def t2_for(http: httpx.Client, user: str = "00u-alice") -> str:
+    """User T2 requesting the delegated tool scope; the IdP downscopes unentitled users."""
     login = http.post(
         f"{IDP_HOST}/_test/login",
         json={"user": user, "client_id": "0oa-chat", "ingress_as_id": "ingress"},
@@ -104,7 +106,7 @@ def t2_for(http: httpx.Client, user: str = "00u-alice") -> str:
             "subject_token": login["id_token"],
             "subject_token_type": "urn:ietf:params:oauth:token-type:id_token",
             "audience": f"{IDP_CONFIGURED}/oauth2/agent-alpha",
-            "scope": "agent.invoke",
+            "scope": "agent.invoke tickets.read",
         },
     )
     return token(
@@ -119,8 +121,11 @@ def t2_for(http: httpx.Client, user: str = "00u-alice") -> str:
     )
 
 
-def agent_call(http: httpx.Client, body: dict[str, Any]) -> dict[str, Any]:
-    headers = {"Authorization": f"Bearer {workload_token(http)}", "X-Subject-Token": t2_for(http)}
+def agent_call(http: httpx.Client, body: dict[str, Any], user: str = "00u-alice") -> dict[str, Any]:
+    headers = {
+        "Authorization": f"Bearer {workload_token(http)}",
+        "X-Subject-Token": t2_for(http, user),
+    }
     r = http.post(DATA, json=body, headers=headers)
     assert r.status_code == 200, r.text
     return dict(r.json())
@@ -131,7 +136,7 @@ def server_id(http: httpx.Client) -> str:
     """Fresh mock-mcp state, then enrol + refresh (alice) + approve (bob)."""
     _compose("restart", "mock-mcp")
     _compose("up", "-d", "--wait", "mock-mcp")
-    sid = f"tickets-{uuid.uuid4().hex[:8]}"
+    sid = MCP_SERVER_ID  # the id agent-alpha's registry grant names (conftest)
     alice = {"Authorization": f"Bearer {admin_token(http, 'alice')}"}
     bob = {"Authorization": f"Bearer {admin_token(http, 'bob')}"}
     enrol = {
@@ -170,6 +175,21 @@ class TestMcpEndToEnd:
         )
         # The tool independently verified a delegated token naming both the user and the agent.
         assert r["result"]["content"][0]["text"] == "ticket T-1 for 00u-alice via 0oa-agent-alpha"
+
+    @pytest.mark.security
+    def test_unentitled_user_denied_by_guardrail(self, http: httpx.Client, server_id: str) -> None:
+        """ADR-0023: bob isn't entitled to tickets.read, so the IdP downscopes his T2 and
+        Cedar's user-scope guardrail denies, even though the agent's grant allows it."""
+        call = {
+            "jsonrpc": "2.0",
+            "id": 3,
+            "method": "tools/call",
+            "params": {"name": f"{server_id}__get_ticket", "arguments": {"id": "T-1"}},
+        }
+        r = agent_call(http, call, user="00u-bob")
+        assert r["error"]["message"] == "unknown tool"  # indistinguishable from a missing tool
+        listing = agent_call(http, {"jsonrpc": "2.0", "id": 4, "method": "tools/list"}, "00u-bob")
+        assert listing["result"]["tools"] == []
 
     @pytest.mark.security
     def test_unbound_agent_is_401(self, http: httpx.Client, server_id: str) -> None:

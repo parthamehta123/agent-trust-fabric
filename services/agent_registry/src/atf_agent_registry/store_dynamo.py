@@ -4,6 +4,7 @@ integrity failure (``StoreUnavailableError``), never a partial record."""
 
 from __future__ import annotations
 
+import contextlib
 import datetime as dt
 import json
 from collections.abc import Sequence
@@ -233,16 +234,17 @@ def ensure_local_table(client: DynamoDBClient, table_name: str) -> None:
     try:
         client.describe_table(TableName=table_name)
     except client.exceptions.ResourceNotFoundException:
-        client.create_table(
-            TableName=table_name,
-            KeySchema=[
-                {"AttributeName": "agent_id", "KeyType": "HASH"},
-                {"AttributeName": "version", "KeyType": "RANGE"},
-            ],
-            AttributeDefinitions=[
-                {"AttributeName": "agent_id", "AttributeType": "S"},
-                {"AttributeName": "version", "AttributeType": "N"},
-            ],
-            BillingMode="PAY_PER_REQUEST",
-        )
+        with contextlib.suppress(client.exceptions.ResourceInUseException):  # a peer won the race
+            client.create_table(
+                TableName=table_name,
+                KeySchema=[
+                    {"AttributeName": "agent_id", "KeyType": "HASH"},
+                    {"AttributeName": "version", "KeyType": "RANGE"},
+                ],
+                AttributeDefinitions=[
+                    {"AttributeName": "agent_id", "AttributeType": "S"},
+                    {"AttributeName": "version", "AttributeType": "N"},
+                ],
+                BillingMode="PAY_PER_REQUEST",
+            )
         client.get_waiter("table_exists").wait(TableName=table_name)

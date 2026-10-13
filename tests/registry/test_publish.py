@@ -283,3 +283,81 @@ class TestStoreDown:
             r.pub.build()
         assert r.pub.tick() is None
         assert r.sink.published == []
+
+
+class TestBuildPublisher:
+    @pytest.fixture
+    def env(self, tmp_path: pathlib.Path) -> dict[str, str]:
+        from cryptography.hazmat.primitives import serialization
+        from cryptography.hazmat.primitives.asymmetric import ec
+
+        keys = tmp_path / "keys"
+        keys.mkdir()
+        pem = ec.generate_private_key(ec.SECP256R1()).private_bytes(
+            serialization.Encoding.PEM,
+            serialization.PrivateFormat.PKCS8,
+            serialization.NoEncryption(),
+        )
+        (keys / "bundle.pem").write_bytes(pem)
+        (tmp_path / "out").mkdir()
+        (tmp_path / "g.cedar").write_text(GUARDRAILS)
+        return {
+            "ATF_ENV": "local",
+            "ATF_REGISTRY_TABLE": "agents",
+            "ATF_BUNDLE_SIGNING_KEY": "local:bundle",
+            "ATF_LOCAL_KEYS_DIR": str(keys),
+            "ATF_BUNDLE_ISSUER": ISS,
+            "ATF_GUARDRAILS_PATH": str(tmp_path / "g.cedar"),
+            "ATF_BUNDLE_DIR": str(tmp_path / "out"),
+            "ATF_BUNDLE_MAX_AGE_S": "20",
+            "ATF_BUNDLE_HEARTBEAT_S": "5",
+            "AWS_REGION": "us-east-1",
+        }
+
+    def test_builds_and_publishes(self, env: dict[str, str], tmp_path: pathlib.Path) -> None:
+        from atf_agent_registry.publish import build_publisher
+
+        with mock_aws():
+            pub = build_publisher(env)
+            assert pub.tick() is not None
+        assert (tmp_path / "out" / "bundle.jws").exists()
+
+    @pytest.mark.security
+    @pytest.mark.parametrize(
+        "over",
+        [
+            {"ATF_BUNDLE_MAX_AGE_S": "601"},
+            {"ATF_BUNDLE_HEARTBEAT_S": "11"},  # > half of 20: gateways would go stale
+            {"ATF_BUNDLE_S3_BUCKET": "b", "ATF_BUNDLE_S3_KEY": "k"},  # two sinks
+            {"ATF_BUNDLE_DIR": ""},  # no sink
+        ],
+    )
+    def test_invalid_config_refused(self, env: dict[str, str], over: dict[str, str]) -> None:
+        from atf_agent_registry.publish import build_publisher
+
+        with mock_aws(), pytest.raises(ValueError):  # noqa: PT011
+            build_publisher({**env, **over})
+
+    @pytest.mark.security
+    def test_local_key_refused_outside_local(self, env: dict[str, str]) -> None:
+        from atf_agent_registry.publish import build_publisher
+
+        from trustkit.signing import SigningError
+
+        with mock_aws(), pytest.raises(SigningError):
+            build_publisher({**env, "ATF_ENV": "prod"})
+
+    def test_s3_sink(self, env: dict[str, str]) -> None:
+        from atf_agent_registry.publish import build_publisher
+
+        with mock_aws():
+            boto3.client("s3", region_name="us-east-1").create_bucket(Bucket="atf-bundles")
+            e = {k: v for k, v in env.items() if k != "ATF_BUNDLE_DIR"}
+            pub = build_publisher(
+                {**e, "ATF_BUNDLE_S3_BUCKET": "atf-bundles", "ATF_BUNDLE_S3_KEY": "b.jws"}
+            )
+            assert pub.tick() is not None
+            body = boto3.client("s3", region_name="us-east-1").get_object(
+                Bucket="atf-bundles", Key="b.jws"
+            )
+            assert body["Body"].read().count(b".") == 2

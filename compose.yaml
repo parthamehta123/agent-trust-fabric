@@ -23,6 +23,28 @@ x-hardening-own-user: &hardening-own-user
   security_opt: ["no-new-privileges:true"]
   restart: "no"
 
+# Policy bundle consumers (ADR-0022/0023): pinned public key, read-only bundle mount. Local ages
+# are short so e2e can prove revocation and fail-closed staleness in seconds (ceiling: 600 s).
+x-bundle-env: &bundle-env
+  ATF_BUNDLE_ISSUER: atf-bundle-publisher
+  ATF_BUNDLE_PUBLIC_JWK_PATH: /run/config/bundle-key.jwk
+  ATF_BUNDLE_PATH: /run/bundles/bundle.jws
+  ATF_BUNDLE_MAX_AGE_S: "20"
+  ATF_BUNDLE_REFRESH_S: "2"
+
+x-mcp-env: &mcp-env
+  ATF_ENV: local
+  ATF_CA_BUNDLE: /run/certs/ca.pem
+  ATF_DDB_TABLE: mcp-servers
+  ATF_EGRESS_PROFILE_PATH: /run/config/mcp-egress.json
+  ATF_LOCAL_KEYS_DIR: /run/keys
+  ATF_SSRF_ALLOW_CIDRS: 10.230.0.0/16
+  AWS_REGION: us-east-1
+  AWS_ENDPOINT_URL_DYNAMODB: http://dynamodb-local:8000
+  # DynamoDB Local checks the key *format* (alphanumeric) but not the values (ED-9).
+  AWS_ACCESS_KEY_ID: localdummy
+  AWS_SECRET_ACCESS_KEY: localdummy
+
 x-healthcheck: &tls-healthcheck
   test: ["CMD", "python", "-c", "import ssl,urllib.request as u; u.urlopen('https://localhost:8443/ping', context=ssl.create_default_context(cafile='/run/certs/ca.pem'), timeout=2)"]
   interval: 5s
@@ -44,7 +66,7 @@ services:
       - ./.local-ca/mock-idp.key:/run/certs/tls.key:ro
       - ./.local-ca/mock-idp-topology.json:/run/config/mock-idp-topology.json:ro
     ports: ["127.0.0.1:9443:8443"]
-    networks: [edge, idp, idp-admin]
+    networks: [edge, idp, idp-admin, idp-registry]
     healthcheck: *tls-healthcheck
 
   interceptor:
@@ -59,7 +81,8 @@ services:
     volumes:
       - ./.local-ca/ca.pem:/run/certs/ca.pem:ro
       - ./.local-ca/profiles.json:/run/config/profiles.json:ro
-      - ./.local-ca/client-keys:/run/keys:ro
+      # Least privilege: only the key its ingress profile signs with (not the whole directory).
+      - ./.local-ca/client-keys/chat.pem:/run/keys/chat.pem:ro
     networks: [core, idp]
 
   agent-runtime:
@@ -117,7 +140,7 @@ services:
     # Deliberate, scoped relaxation (ED-9): DynamoDB Local extracts its native SQLite library
     # to /tmp and must map it executable, so this test-only container's /tmp allows exec.
     tmpfs: ["/tmp:size=64m,mode=1777,exec"]
-    networks: [ddb-data, ddb-admin, ddb-inference]
+    networks: [ddb-data, ddb-admin, ddb-inference, ddb-registry]
     healthcheck:
       test: ["CMD-SHELL", "bash -c '</dev/tcp/127.0.0.1/8000' || exit 1"]
       interval: 3s
@@ -150,29 +173,22 @@ services:
     <<: *hardening
     build: { context: ., dockerfile: deploy/local/service.Dockerfile, args: { SERVICE: atf-mcp-gateway } }
     command: ["atf_mcp_gateway.app:data_app_from_env"]
-    environment: &mcp-env
-      ATF_ENV: local
-      ATF_CA_BUNDLE: /run/certs/ca.pem
-      ATF_DDB_TABLE: mcp-servers
-      ATF_EGRESS_PROFILE_PATH: /run/config/mcp-egress.json
-      ATF_LOCAL_KEYS_DIR: /run/keys
-      ATF_SSRF_ALLOW_CIDRS: 10.230.0.0/16
-      AWS_REGION: us-east-1
-      AWS_ENDPOINT_URL_DYNAMODB: http://dynamodb-local:8000
-      # DynamoDB Local checks the key *format* (alphanumeric) but not the values (ED-9).
-      AWS_ACCESS_KEY_ID: localdummy
-      AWS_SECRET_ACCESS_KEY: localdummy
+    environment:
+      <<: [*mcp-env, *bundle-env]
     volumes:
       - ./.local-ca/ca.pem:/run/certs/ca.pem:ro
       - ./.local-ca/mcp-gateway.pem:/run/certs/tls.pem:ro
       - ./.local-ca/mcp-gateway.key:/run/certs/tls.key:ro
       - ./.local-ca/mcp-egress.json:/run/config/mcp-egress.json:ro
       - ./.local-ca/client-keys/gateway.pem:/run/keys/gateway.pem:ro
+      - ./.local-ca/bundle-key.jwk:/run/config/bundle-key.jwk:ro
+      - ./.local-ca/bundles:/run/bundles:ro
     ports: ["127.0.0.1:8444:8443"]
     networks: [mcp-edge, ddb-data, tools-data, idp]
     depends_on:
       mcp-admin: { condition: service_healthy }
       mock-mcp: { condition: service_healthy }
+      bundle-publisher: { condition: service_healthy }
     healthcheck: *tls-healthcheck
 
   mcp-admin:
@@ -233,19 +249,87 @@ services:
       AWS_SECRET_ACCESS_KEY: localdummy
       # Provider credential for mock-llm only; agents' tokens never reach the provider.
       OPENAI_API_KEY: localdummy
+      <<: *bundle-env
     volumes:
       - ./.local-ca/ca.pem:/run/certs/ca.pem:ro
       - ./.local-ca/inference-gateway.pem:/run/certs/tls.pem:ro
       - ./.local-ca/inference-gateway.key:/run/certs/tls.key:ro
       - ./.local-ca/inference-profile.json:/run/config/inference-profile.json:ro
       - ./.local-ca/model-routes.json:/run/config/model-routes.json:ro
+      - ./.local-ca/bundle-key.jwk:/run/config/bundle-key.jwk:ro
+      - ./.local-ca/bundles:/run/bundles:ro
     ports: ["127.0.0.1:8445:8443"]
     networks: [inference-edge, ddb-inference, llm, idp]
     depends_on:
       dynamodb-local: { condition: service_healthy }
       mock-idp: { condition: service_healthy }
       mock-llm: { condition: service_healthy }
+      bundle-publisher: { condition: service_healthy }
     healthcheck: *tls-healthcheck
+
+  # ---------------------------------------------------------------- Registry + bundles (ADR-0021/0022)
+  # The admin API can't sign; the publisher holds the only signing key, sits on ddb-registry only,
+  # and writes bundles that gateways mount read-only.
+
+  agent-registry:
+    <<: *hardening
+    build: { context: ., dockerfile: deploy/local/service.Dockerfile, args: { SERVICE: atf-agent-registry } }
+    command: ["atf_agent_registry.app:app_from_env"]
+    environment:
+      ATF_ENV: local
+      ATF_CA_BUNDLE: /run/certs/ca.pem
+      ATF_REGISTRY_ISSUER: https://mock-idp:8443/oauth2/registry
+      ATF_REGISTRY_AUDIENCE: api://agent-registry
+      ATF_REGISTRY_JWKS_URI: https://mock-idp:8443/oauth2/registry/v1/keys
+      ATF_REGISTRY_TABLE: agents
+      AWS_REGION: us-east-1
+      AWS_ENDPOINT_URL_DYNAMODB: http://dynamodb-local:8000
+      AWS_ACCESS_KEY_ID: localdummy
+      AWS_SECRET_ACCESS_KEY: localdummy
+    volumes:
+      - ./.local-ca/ca.pem:/run/certs/ca.pem:ro
+      - ./.local-ca/agent-registry.pem:/run/certs/tls.pem:ro
+      - ./.local-ca/agent-registry.key:/run/certs/tls.key:ro
+    ports: ["127.0.0.1:9446:8443"]
+    networks: [registry-edge, ddb-registry, idp-registry]
+    depends_on:
+      dynamodb-local: { condition: service_healthy }
+      mock-idp: { condition: service_healthy }
+    healthcheck: *tls-healthcheck
+
+  bundle-publisher:
+    <<: *hardening
+    build: { context: ., dockerfile: deploy/local/service.Dockerfile, args: { SERVICE: atf-agent-registry } }
+    entrypoint: ["python", "-m", "atf_agent_registry.publish"]
+    command: []
+    environment:
+      ATF_ENV: local
+      ATF_REGISTRY_TABLE: agents
+      ATF_BUNDLE_SIGNING_KEY: local:bundle
+      ATF_LOCAL_KEYS_DIR: /run/keys
+      ATF_BUNDLE_ISSUER: atf-bundle-publisher
+      ATF_GUARDRAILS_PATH: /run/config/guardrails.cedar
+      ATF_BUNDLE_DIR: /run/bundles
+      ATF_BUNDLE_MAX_AGE_S: "20"
+      ATF_BUNDLE_HEARTBEAT_S: "5"
+      ATF_PUBLISH_POLL_S: "1"
+      AWS_REGION: us-east-1
+      AWS_ENDPOINT_URL_DYNAMODB: http://dynamodb-local:8000
+      AWS_ACCESS_KEY_ID: localdummy
+      AWS_SECRET_ACCESS_KEY: localdummy
+    volumes:
+      - ./.local-ca/bundle-signing/bundle.pem:/run/keys/bundle.pem:ro
+      - ./policies/guardrails.cedar:/run/config/guardrails.cedar:ro
+      - ./.local-ca/bundles:/run/bundles
+    networks: [ddb-registry]
+    depends_on:
+      agent-registry: { condition: service_healthy }
+    healthcheck:
+      # Healthy = a bundle was written in the last 15 s (heartbeat is 5 s).
+      test: ["CMD", "python", "-c", "import os,sys,time; sys.exit(0 if time.time()-os.stat('/run/bundles/bundle.jws').st_mtime < 15 else 1)"]
+      interval: 2s
+      timeout: 2s
+      retries: 20
 
 networks:
   edge: {}
@@ -264,3 +348,6 @@ networks:
   inference-edge: {}
   ddb-inference: { internal: true }
   llm: { internal: true }
+  registry-edge: {}
+  ddb-registry: { internal: true }
+  idp-registry: { internal: true }

@@ -11,7 +11,7 @@ import datetime as dt
 import hashlib
 import json
 import threading
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from typing import Final
 
 from atf_agent_registry.records import (
@@ -142,3 +142,74 @@ class BundlePublisher:
         while not stop.is_set():
             self.tick()
             stop.wait(poll_s)
+
+
+def build_publisher(env: Mapping[str, str]) -> BundlePublisher:
+    """Env wiring (ADR-0022 §7). Anything invalid raises (cold-start failure).
+
+    ``ATF_REGISTRY_TABLE``, ``ATF_BUNDLE_SIGNING_KEY`` (``arn:aws:kms:...`` or, with
+    ``ATF_ENV=local``, ``local:<name>`` under ``ATF_LOCAL_KEYS_DIR``), ``ATF_BUNDLE_ISSUER``,
+    ``ATF_GUARDRAILS_PATH``, ``ATF_BUNDLE_DIR`` **or** ``ATF_BUNDLE_S3_BUCKET`` + ``_KEY``,
+    ``ATF_BUNDLE_MAX_AGE_S`` (<= 600), ``ATF_BUNDLE_HEARTBEAT_S`` (<= half the max age)."""
+    import pathlib
+
+    import boto3
+
+    from atf_agent_registry.store_dynamo import DynamoRegistryStore, ensure_local_table
+    from trustkit_aws.s3_bundles import S3BundleSink
+    from trustkit_aws.signers import make_signer_factory
+    from trustkit_policy.runtime import MAX_AGE_CEILING_S
+    from trustkit_policy.sources import FileBundleSink
+
+    table, issuer = env["ATF_REGISTRY_TABLE"], env["ATF_BUNDLE_ISSUER"]
+    region = env.get("AWS_REGION", "us-east-1")
+    guardrails = pathlib.Path(env["ATF_GUARDRAILS_PATH"]).read_text()
+    max_age = int(env.get("ATF_BUNDLE_MAX_AGE_S", str(MAX_AGE_CEILING_S)))
+    heartbeat = int(env.get("ATF_BUNDLE_HEARTBEAT_S", str(HEARTBEAT_S)))
+    if not 0 < max_age <= MAX_AGE_CEILING_S:
+        raise ValueError("bundle max age must be within 1..600 s")
+    if not 0 < heartbeat * 2 <= max_age:
+        raise ValueError("heartbeat must be at most half the max age (gateways must not go stale)")
+    signer = make_signer_factory(env)(env["ATF_BUNDLE_SIGNING_KEY"])
+
+    directory, bucket, key = (
+        env.get("ATF_BUNDLE_DIR"),
+        env.get("ATF_BUNDLE_S3_BUCKET"),
+        env.get("ATF_BUNDLE_S3_KEY"),
+    )
+    sink: BundleSink
+    if directory and not bucket and not key:
+        sink = FileBundleSink(pathlib.Path(directory))
+    elif bucket and key and not directory:
+        sink = S3BundleSink(boto3.client("s3", region_name=region), bucket=bucket, key=key)
+    else:
+        raise ValueError("bundle sink: set ATF_BUNDLE_DIR or ATF_BUNDLE_S3_BUCKET+KEY")
+
+    ddb = boto3.client("dynamodb", region_name=region)
+    if env.get("ATF_ENV") == "local":
+        ensure_local_table(ddb, table)
+    return BundlePublisher(
+        DynamoRegistryStore(ddb, table),
+        signer,
+        sink,
+        guardrails=guardrails,
+        issuer=issuer,
+        max_age_s=max_age,
+        heartbeat_s=heartbeat,
+    )
+
+
+def main() -> int:  # pragma: no cover - process entrypoint; build_publisher is tested
+    import os
+    import signal
+
+    publisher = build_publisher(dict(os.environ))
+    stop = threading.Event()
+    signal.signal(signal.SIGTERM, lambda *_: stop.set())
+    signal.signal(signal.SIGINT, lambda *_: stop.set())
+    publisher.run_forever(stop, poll_s=float(os.environ.get("ATF_PUBLISH_POLL_S", "5")))
+    return 0
+
+
+if __name__ == "__main__":  # pragma: no cover
+    raise SystemExit(main())

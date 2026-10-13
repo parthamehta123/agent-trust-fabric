@@ -83,6 +83,9 @@ class ClientRegistration:
     """Public JWKS used to verify this client's ``private_key_jwt`` assertions."""
     exchange_policy: Mapping[str, frozenset[str]] = field(default_factory=dict)
     """Org-AS policy: custom-AS issuer -> scopes this client may request an ID-JAG for."""
+    groups: tuple[str, ...] = ()
+    """Emitted as a ``groups`` claim in this client's client-credentials tokens (an Okta
+    custom-AS groups claim, simplified). Used for the registry's admin roles (ADR-0021 §2)."""
 
 
 @dataclass(frozen=True)
@@ -390,6 +393,9 @@ class MockIdp:
             "iat": now,
             "exp": now + self._at_ttl,
         }
+        groups = self._clients[client_id].groups
+        if groups:
+            claims["groups"] = sorted(groups)
         token = self._sign(self._server_keys[as_id], ACCESS_TOKEN_TYP, claims)
         return TokenResponse(
             200,

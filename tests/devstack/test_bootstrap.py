@@ -124,7 +124,16 @@ class TestConfigs:
 
 class TestPhase3Material:
     def test_all_client_keys_and_mcp_egress_profile(self, result: BootstrapResult) -> None:
-        assert set(result.client_keys) == {"chat", "agent", "gateway", "admin-alice", "admin-bob"}
+        assert set(result.client_keys) == {
+            "chat",
+            "agent",
+            "gateway",
+            "admin-alice",
+            "admin-bob",
+            "reg-dave",
+            "reg-bob",
+            "reg-carol",
+        }
         doc = json.loads((result.out_dir / "mcp-egress.json").read_text())
         assert "agents" not in doc  # ADR-0022: grants come from the bundle
         per_server = {**doc, "server_id": "tickets"}  # as the gateway builds it per record
@@ -168,3 +177,39 @@ class TestInferenceMaterial:
         leaf = cert(result.service_certs["mock-llm"][0])
         sans = leaf.extensions.get_extension_for_class(x509.SubjectAlternativeName).value
         assert sans.get_values_for_type(x509.DNSName) == ["mock-llm"]
+
+
+class TestPhase4Material:
+    def test_registry_admins_carry_groups(self, result: BootstrapResult) -> None:
+        topo = json.loads(result.topology.read_text())
+        groups = {c["client_id"]: c.get("groups") for c in topo["clients"]}
+        assert groups["0oa-reg-dave"] == ["team-alpha"]
+        assert groups["0oa-reg-bob"] == ["atf-registry-approvers"]
+        assert groups["0oa-reg-carol"] == ["atf-security-approvers"]
+        assert groups["0oa-chat"] is None  # nobody else gets roles
+
+    def test_registry_as_is_its_own_audience(self, result: BootstrapResult) -> None:
+        topo = json.loads(result.topology.read_text())
+        reg = next(s for s in topo["authorization_servers"] if s["as_id"] == "registry")
+        assert reg["resource_audience"] == "api://agent-registry"
+        assert sorted(reg["clients"]) == ["0oa-reg-bob", "0oa-reg-carol", "0oa-reg-dave"]
+
+    @pytest.mark.security
+    def test_bundle_key_isolated_and_pair_matches(self, result: BootstrapResult) -> None:
+        priv_path = result.out_dir / "bundle-signing" / "bundle.pem"
+        assert not (result.out_dir / "client-keys" / "bundle.pem").exists()
+        assert priv_path.stat().st_mode & 0o777 == 0o600
+        assert (result.out_dir / "bundle-signing").stat().st_mode & 0o777 == 0o700
+        pub = json.loads((result.out_dir / "bundle-key.jwk").read_text())
+        assert "d" not in pub
+        from trustkit.signing import InMemoryEs256Signer
+
+        assert InMemoryEs256Signer(priv_path.read_bytes()).public_jwk() == pub
+
+    def test_bundles_dir_and_entitlements(self, result: BootstrapResult) -> None:
+        assert (result.out_dir / "bundles").is_dir()
+        topo = json.loads(result.topology.read_text())
+        agent_as = next(s for s in topo["authorization_servers"] if s["as_id"] == "agent-alpha")
+        assert agent_as["restricted_scopes"] == {"tickets.read": ["00u-alice"]}
+        idp = build_idp_from_topology(topo, base_url=BASE)
+        assert idp.issuer("registry") == f"{BASE}/oauth2/registry"

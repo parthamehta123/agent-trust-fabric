@@ -6,17 +6,16 @@ Identity, authorization and governance plane for AI agents:
 - **Egress:** agent → tools (MCP), models (LiteLLM → Bedrock) and knowledge (Bedrock KB).
 - **Control plane:** an agent registry with security identity records and approval workflow.
 
-> **Status: Phase 3 complete.** Ingress, tool egress and model egress all run as hardened
-> containers over TLS:
-> - **Ingress:** caller → gateway emulator → interceptor (real Lambda image) → mock IdP → agent
->   runtime, which validates T2 itself.
-> - **Tools:** agent → MCP gateway (SSRF pinning, digest pinning, two-person approval, delegated
->   tool tokens) → mock MCP server.
-> - **Models:** agent → inference gateway (LiteLLM SDK, per-agent model allowlist, DynamoDB
->   budgets, prompt and completion scanning) → mock LLM.
+> **Status: Phase 4b complete.** Every gateway enforces a **signed policy bundle** built from an
+> approved agent registry:
+> - registry (two-person, tiered approval) → separate bundle publisher (the only signing key) →
+>   ingress interceptor, MCP gateway and inference gateway, each running Cedar before acting;
+> - user entitlements are carried in T2 (IdP downscoping) and enforced by a Cedar guardrail;
+> - revocation reaches every gateway in seconds, rollback replays are rejected, and a dead
+>   publisher fails everything closed.
 >
 > Nothing is deployed to AWS yet. Real-AWS verification items are tracked as A-1b/A-5/A-6/A-7
-> and ED-1..11.
+> and ED-1..12.
 
 ## Documents
 
@@ -87,6 +86,7 @@ Published ports, all on `127.0.0.1`:
 | 8445 | Inference gateway |
 | 9443 | Test IdP |
 | 9445 | MCP admin plane |
+| 9446 | Agent registry (admin) |
 
-The agent runtime, tool servers, model server and DynamoDB Local are reachable only over
-internal networks.
+The agent runtime, tool servers, model server, bundle publisher and DynamoDB Local are reachable
+only over internal networks.

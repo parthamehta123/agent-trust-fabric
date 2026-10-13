@@ -158,3 +158,30 @@ class TestDelegationRejects:
             },
         )
         err(r, "invalid_client", 401)
+
+
+class TestGroupsClaim:
+    """ADR-0021 §2: admin roles arrive as a `groups` claim (Okta custom-AS groups claim)."""
+
+    def test_groups_emitted_only_for_clients_that_have_them(self, world: World) -> None:
+        import dataclasses
+
+        from tests.exchange.test_egress import claims
+
+        def cc() -> dict[str, Any]:
+            r = world.idp.token(
+                WORKLOAD_EP,
+                {
+                    "grant_type": "client_credentials",
+                    **auth(world, AGENT_CLIENT, "local:agent", WORKLOAD_EP),
+                },
+            )
+            assert r.status == 200, r.body
+            return claims(str(r.body["access_token"]))
+
+        assert "groups" not in cc()
+        reg = world.idp._clients[AGENT_CLIENT]
+        world.idp._clients[AGENT_CLIENT] = dataclasses.replace(
+            reg, groups=("team-alpha", "atf-registry-approvers")
+        )
+        assert cc()["groups"] == ["atf-registry-approvers", "team-alpha"]

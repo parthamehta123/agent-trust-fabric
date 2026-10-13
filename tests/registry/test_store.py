@@ -232,3 +232,14 @@ class TestDynamoEdges:
 
         with pytest.raises(StoreUnavailableError):
             DynamoRegistryStore(Down(), "agents").put_new(version())  # type: ignore[arg-type]
+
+
+def test_ensure_local_table_tolerates_a_concurrent_creator() -> None:
+    """Registry API and publisher both create the local table at startup; the loser must not
+    crash on ResourceInUseException."""
+    c, stub = _stubbed()
+    stub.add_client_error("describe_table", service_error_code="ResourceNotFoundException")
+    stub.add_client_error("create_table", service_error_code="ResourceInUseException")
+    stub.add_response("describe_table", {"Table": {"TableName": "agents", "TableStatus": "ACTIVE"}})
+    with stub:
+        ensure_local_table(c, "agents")
