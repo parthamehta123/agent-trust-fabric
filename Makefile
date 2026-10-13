@@ -70,7 +70,7 @@ iac-validate:  ## fmt, init (providers only), validate, test, tflint, checkov (s
 	$(IAC_RUN) -w /w/infra/envs/dev $(TOFU) init -backend=false -input=false
 	$(IAC_RUN) -w /w/infra/envs/dev $(TOFU) validate
 	$(IAC_RUN) -w /w/infra/envs/dev $(TOFU) test
-	for mod in network kms dynamodb bundles budget; do \
+	for mod in network kms dynamodb bundles budget ecr ecs_cluster alb ecs_service certs verified_access; do \
 	  $(IAC_RUN) -w /w/infra/modules/$$mod $(TOFU) init -backend=false -input=false >/dev/null && \
 	  $(IAC_RUN) -w /w/infra/modules/$$mod $(TOFU) test || exit 1; \
 	done

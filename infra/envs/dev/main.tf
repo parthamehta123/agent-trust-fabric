@@ -14,8 +14,13 @@ module "kms" {
   source      = "../../modules/kms"
   name        = local.name
   client_keys = ["interceptor", "a2a-gateway", "tool-gateway"]
+  # Keys come from the same map as the IAM policies (services.tf: sign_grants). Role references
+  # are static (a dynamic module index would create a dependency cycle); check "sign_grants_wired"
+  # fails if a grant is added without wiring it here.
   signers = {
-    bundle = [aws_iam_role.bundle_publisher.arn] # only the publisher can sign bundles
+    (local.sign_grants["bundle-publisher"]) = [module.svc["bundle-publisher"].task_role_arn]
+    (local.sign_grants["mcp-gateway"])      = [module.svc["mcp-gateway"].task_role_arn]
+    (local.sign_grants["a2a-gateway"])      = [module.svc["a2a-gateway"].task_role_arn]
   }
 }
 
@@ -38,7 +43,7 @@ module "bundles" {
   source             = "../../modules/bundles"
   bucket_name        = var.bundle_bucket_name
   kms_key_arn        = module.kms.data_key_arn
-  publisher_role_arn = aws_iam_role.bundle_publisher.arn
+  publisher_role_arn = module.svc["bundle-publisher"].task_role_arn
 }
 
 module "budget" {
@@ -48,16 +53,9 @@ module "budget" {
   alert_emails      = var.budget_alert_emails
 }
 
-# The bundle publisher's task role exists from 6a because two resource policies (the bundle
-# key and bucket) name it. Its permissions are attached in 6b with the ECS service.
-resource "aws_iam_role" "bundle_publisher" {
-  name = "${local.name}-bundle-publisher"
-  assume_role_policy = jsonencode({
-    Version = "2012-10-17"
-    Statement = [{
-      Effect    = "Allow"
-      Principal = { Service = "ecs-tasks.amazonaws.com" }
-      Action    = "sts:AssumeRole"
-    }]
-  })
+check "sign_grants_wired" {
+  assert {
+    condition     = toset(keys(local.sign_grants)) == toset(["bundle-publisher", "mcp-gateway", "a2a-gateway"])
+    error_message = "A signing grant was added or removed: wire its role in module.kms.signers too."
+  }
 }

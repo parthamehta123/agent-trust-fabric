@@ -60,3 +60,74 @@ variable "deletion_protection" {
   default     = true
   description = "Protect stateful resources; disable only for sandbox teardown."
 }
+
+# ---------------------------------------------------------------- 6b: services
+variable "domain" {
+  type        = string
+  description = "Domain you own; planes are <plane>.<domain> (private zone)."
+}
+
+variable "public_zone_id" {
+  type        = string
+  description = "Public Route 53 zone for ACM DNS validation."
+}
+
+variable "image_digests" {
+  type        = map(string)
+  description = "Service -> image digest (sha256:...). Tags are never deployed."
+}
+
+variable "agent_source_security_group_ids" {
+  type        = list(string)
+  default     = []
+  description = "Agent runtimes allowed onto the data plane (AgentCore Runtime / agent task SGs)."
+}
+
+variable "idp_egress_cidrs" {
+  type        = map(string)
+  default     = {}
+  description = "Named CIDRs of the external IdP (Okta) for JWKS and token calls."
+}
+
+variable "a2a_target_cidrs" {
+  type        = map(string)
+  default     = {}
+  description = "Named CIDRs of agent runtimes the A2A gateway may forward to."
+}
+
+variable "allowed_model_arns" {
+  type        = list(string)
+  default     = []
+  description = "The only Bedrock models the inference gateway may invoke (union of agent allowlists)."
+}
+
+variable "enable_verified_access" {
+  type        = bool
+  default     = true
+  description = "Front the admin plane with Verified Access (off = nobody reaches it)."
+}
+
+variable "okta_issuer" {
+  type        = string
+  default     = "https://example.okta.com/oauth2/default"
+  description = "IdP issuer for Verified Access."
+}
+
+variable "verified_access_client_id" {
+  type        = string
+  default     = "atf-verified-access"
+  description = "OIDC client for Verified Access."
+}
+
+variable "verified_access_client_secret" {
+  type        = string
+  default     = null
+  sensitive   = true
+  description = "OIDC client secret (TF_VAR_ only)."
+}
+
+variable "admin_groups" {
+  type        = list(string)
+  default     = ["atf-security-approvers", "atf-registry-approvers"]
+  description = "IdP groups allowed onto the admin plane."
+}

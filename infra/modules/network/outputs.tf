@@ -12,3 +12,8 @@ output "endpoints_security_group_id" {
   value       = aws_security_group.endpoints.id
   description = "Security group attached to interface endpoints."
 }
+
+output "gateway_prefix_list_ids" {
+  value       = { for k, e in aws_vpc_endpoint.gateway : k => e.prefix_list_id }
+  description = "Prefix lists of the S3 and DynamoDB gateway endpoints (for SG egress)."
+}

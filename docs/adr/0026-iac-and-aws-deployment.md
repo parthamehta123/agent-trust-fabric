@@ -56,3 +56,37 @@
    - **6b:** ECS services, IAM, security groups, ECR.
    - **6c:** interceptor Lambda, AgentCore Gateway, Bedrock Guardrail, Bedrock KB on S3 Vectors.
    - **6d:** CI plan through GitHub OIDC, plus the apply/destroy runbook and the A-x/ED-x checklist.
+
+## 6b decisions (2026-10-13)
+
+8. **Three internal ALBs by plane**, mirroring the compose networks:
+   - **data** (MCP, inference and A2A gateways), reachable from agent runtimes only;
+   - **admin** (MCP admin, registry), reachable **only** from the AWS Verified Access endpoint;
+   - **tools** (knowledge server), reachable only from the MCP gateway and MCP admin.
+
+   Each ALB is TLS 1.3, drops invalid header fields, and returns a default 404.
+
+9. **Certificates:** a wildcard ACM certificate for a domain you own (DNS-validated in its
+   public zone), and a private Route 53 zone so plane hostnames resolve only inside the VPC.
+
+10. **Admin access: AWS Verified Access** with the IdP over OIDC. Its policy is **Cedar**: only
+    listed admin groups pass. With Verified Access disabled, **nothing** reaches the admin
+    plane. This closes **RR-7** in the deployment design: tool servers have no path to the admin
+    listener.
+
+11. **Services:**
+    - Each service has one task role, one security group (admitting only its plane's ALB on
+      8443), and egress to named destinations only: VPC endpoints, gateway-endpoint prefix
+      lists, named IdP and runtime CIDRs.
+    - Tasks are Fargate on arm64 with a read-only root (ephemeral `/tmp` volume), user
+      10001, all capabilities dropped, **no ECS Exec** and no public IP. Images are deployed
+      **by digest only**, from immutable, scan-on-push ECR repositories.
+    - Who may sign with which key comes from **one map** (`sign_grants`) that generates both the
+      IAM policies and the KMS key policies; a `check` block fails on unwired drift.
+    - Tests assert:
+      - no wildcards in any task policy;
+      - only the publisher signs bundles and writes the bucket;
+      - only the MCP gateway reads tool secrets;
+      - only the inference gateway invokes models;
+      - the registry never deletes;
+      - the admin plane is reachable only through Verified Access, and closed without it.
