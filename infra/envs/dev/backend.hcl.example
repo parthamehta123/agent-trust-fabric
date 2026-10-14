@@ -1,7 +1,7 @@
 # tofu init -backend-config=backend.hcl   (bootstrap the bucket and key first; see docs)
-bucket       = "REPLACE-atf-tfstate"
+bucket       = "REPLACE-atf-tfstate" # infra/bootstrap output state_bucket
 key          = "dev/terraform.tfstate"
 region       = "us-east-1"
 encrypt      = true
-kms_key_id   = "alias/REPLACE-atf-tfstate"
+kms_key_id   = "alias/atf-tfstate"   # created by infra/bootstrap
 use_lockfile = true

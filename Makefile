@@ -6,7 +6,7 @@ PACKAGES := mock-idp gateway-emulator atf-agent-runtime atf-interceptor atf-mcp-
             atf-inference-gateway mock-llm atf-agent-registry atf-a2a-gateway \
             atf-knowledge-server
 
-.PHONY: certs kb-index wheels up e2e logs-scan down clean iac-tools iac-validate
+.PHONY: certs kb-index wheels up e2e logs-scan down clean iac-tools iac-validate iac-plan iac-apply
 
 certs:  ## ephemeral CA, service certs, client key, configs -> .local-ca/ (gitignored)
 	uv run python -m devstack.bootstrap --out .local-ca
@@ -73,7 +73,7 @@ iac-validate:  ## fmt, init (providers only), validate, test, tflint, checkov (s
 	$(IAC_RUN) -w /w/infra/bootstrap $(TOFU) init -backend=false -input=false
 	$(IAC_RUN) -w /w/infra/bootstrap $(TOFU) validate
 	$(IAC_RUN) -w /w/infra/bootstrap $(TOFU) test
-	for mod in network kms dynamodb bundles budget ecr ecs_cluster alb ecs_service certs verified_access guardrail knowledge_base lambda_interceptor agentcore_gateway; do \
+	for mod in network kms dynamodb bundles budget ecr ecs_cluster alb ecs_service certs verified_access guardrail knowledge_base lambda_interceptor agentcore_gateway cloudtrail; do \
 	  $(IAC_RUN) -w /w/infra/modules/$$mod $(TOFU) init -backend=false -input=false >/dev/null && \
 	  $(IAC_RUN) -w /w/infra/modules/$$mod $(TOFU) test || exit 1; \
 	done
@@ -82,3 +82,28 @@ iac-validate:  ## fmt, init (providers only), validate, test, tflint, checkov (s
 	docker run --rm --network none --read-only --tmpfs /tmp --cap-drop ALL \
 	  --security-opt no-new-privileges --user $(ATF_UID):$(ATF_GID) \
 	  -v $(CURDIR)/infra:/data:ro $(CHECKOV) -d /data --quiet --compact --framework terraform --skip-download
+
+# ---------------------------------------------------------------- IaC against AWS (ADR-0026 §26)
+# These touch AWS. They refuse to run unless ATF_ALLOW_AWS=1, and expect web-identity credentials
+# (AWS_ROLE_ARN + AWS_WEB_IDENTITY_TOKEN_FILE, set by the CI workflows) plus backend.hcl and
+# terraform.tfvars in infra/envs/dev. The SDK inside the pinned OpenTofu image assumes the role.
+IAC_AWS = docker run --rm --user $(ATF_UID):$(ATF_GID) -e HOME=/tmp -e TF_PLUGIN_CACHE_DIR=/cache \
+	-e TF_IN_AUTOMATION=1 -e AWS_REGION -e AWS_ROLE_ARN -e AWS_ROLE_SESSION_NAME \
+	-e AWS_WEB_IDENTITY_TOKEN_FILE=/run/oidc/token -v $(AWS_WEB_IDENTITY_TOKEN_FILE):/run/oidc/token:ro \
+	-e TF_VAR_verified_access_client_secret \
+	-v $(CURDIR)/infra:/w/infra -v $(CURDIR)/policies:/w/policies:ro -v $(CURDIR)/build/iac-cache:/cache \
+	-w /w/infra/envs/dev $(TOFU)
+
+iac-guard:
+	@test "$(ATF_ALLOW_AWS)" = "1" || { echo "refusing: this target touches AWS (set ATF_ALLOW_AWS=1)"; exit 1; }
+	@test -n "$(AWS_ROLE_ARN)" && test -f "$(AWS_WEB_IDENTITY_TOKEN_FILE)" || { echo "refusing: no web-identity credentials"; exit 1; }
+
+iac-plan: iac-guard  ## plan dev with the CI plan role (read-only); never applies
+	mkdir -p build/iac-cache
+	$(IAC_AWS) init -input=false -backend-config=backend.hcl
+	$(IAC_AWS) plan -input=false -lock-timeout=60s -var-file=terraform.tfvars -no-color
+
+iac-apply: iac-guard  ## plan then apply that exact plan, with the CI apply role (sandbox environment)
+	mkdir -p build/iac-cache
+	$(IAC_AWS) init -input=false -backend-config=backend.hcl
+	$(subst $(TOFU),--entrypoint sh $(TOFU),$(IAC_AWS)) -c 'tofu plan -input=false -lock-timeout=60s -var-file=terraform.tfvars -out=/tmp/dev.plan -no-color && tofu apply -input=false -no-color /tmp/dev.plan'

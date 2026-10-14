@@ -101,6 +101,7 @@ variables {
   }
   kb_source_bucket_name         = "atf-dev-kb-source-test"
   kb_ingest_principal_arns      = ["arn:aws:iam::123456789012:role/atf-ci-ingest"]
+  cloudtrail_bucket_name        = "atf-dev-trail-test"
   verified_access_client_secret = "test-only"
   idp = {
     base_url = "https://example.okta.com"
@@ -460,5 +461,20 @@ run "kb_outputs_for_the_runbook" {
   assert {
     condition     = output.knowledge.source_bucket == "atf-dev-kb-source-test"
     error_message = "The ingest runbook needs the corpus bucket."
+  }
+}
+
+
+# ------------------------------------------------------------------ 6d-ii: audit
+
+run "trail_covers_every_security_relevant_write" {
+  command = plan
+  assert {
+    condition     = length(output.audit.data_event_arns.s3) == 2 && length(output.audit.data_event_arns.lambda) == 1 && length(output.audit.data_event_arns.dynamodb) == 2
+    error_message = "Bundles and corpus writes, interceptor invokes, agents and mcp-servers writes."
+  }
+  assert {
+    condition     = output.audit.bucket == "atf-dev-trail-test"
+    error_message = "The trail writes to the bucket bootstrap's guardrails protect."
   }
 }

@@ -43,6 +43,11 @@ resource "aws_kms_key" "state" {
   })
 }
 
+resource "aws_kms_alias" "state" {
+  name          = "alias/${var.name}-tfstate"
+  target_key_id = aws_kms_key.state.key_id
+}
+
 resource "aws_s3_bucket" "state" {
   # checkov:skip=CKV_AWS_18:State access is recorded by CloudTrail data events, not access logs.
   # checkov:skip=CKV_AWS_144:Sandbox state; versioning gives recovery, no cross-region copy.

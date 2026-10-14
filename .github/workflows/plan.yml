@@ -1,0 +1,52 @@
+name: plan
+
+# ADR-0026 §26: read-only plan of infra/envs/dev with the CI plan role. Fork PRs never receive an
+# OIDC token, and the role trusts only this repository's pull requests and main. Nothing applies.
+on:
+  pull_request:
+    paths: ["infra/**", "policies/**", ".github/workflows/plan.yml"]
+  push:
+    branches: [main]
+    paths: ["infra/**", "policies/**"]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: plan-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  plan:
+    # Dormant until bootstrap has run and the repository variables exist.
+    if: ${{ vars.ATF_PLAN_ROLE_ARN != '' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      AWS_REGION: ${{ vars.ATF_AWS_REGION }}
+      AWS_ROLE_ARN: ${{ vars.ATF_PLAN_ROLE_ARN }}
+      AWS_ROLE_SESSION_NAME: gha-plan-${{ github.run_id }}
+      AWS_WEB_IDENTITY_TOKEN_FILE: ${{ runner.temp }}/oidc-token
+      ATF_ALLOW_AWS: "1"
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with: { persist-credentials: false }
+      - name: Non-secret inputs from repository variables
+        env:
+          TFVARS: ${{ vars.ATF_DEV_TFVARS }}
+          BACKEND: ${{ vars.ATF_DEV_BACKEND_HCL }}
+        run: |
+          printf '%s\n' "$TFVARS" > infra/envs/dev/terraform.tfvars
+          printf '%s\n' "$BACKEND" > infra/envs/dev/backend.hcl
+      - name: OIDC token for STS (no third-party action, no stored keys)
+        run: |
+          umask 077
+          curl -sSf -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
+            "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=sts.amazonaws.com" | jq -r .value > "$AWS_WEB_IDENTITY_TOKEN_FILE"
+      - run: make iac-plan
+        env:
+          TF_VAR_verified_access_client_secret: ${{ secrets.ATF_VERIFIED_ACCESS_CLIENT_SECRET }}
+      - if: always()
+        run: rm -f "$AWS_WEB_IDENTITY_TOKEN_FILE" infra/envs/dev/terraform.tfvars infra/envs/dev/backend.hcl

@@ -48,3 +48,6 @@ ingress_agent = {
 }
 kb_source_bucket_name    = "atf-dev-kb-source-REPLACE"
 kb_ingest_principal_arns = ["arn:aws:iam::000000000000:role/atf-ci-ingest-ci"] # infra/bootstrap output role_arns["ingest-ci"]
+
+# 6d: must equal infra/bootstrap's cloudtrail_bucket_name (its apply-role guardrails name it).
+cloudtrail_bucket_name = "atf-dev-trail-REPLACE"

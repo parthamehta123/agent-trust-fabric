@@ -224,3 +224,9 @@ variable "kb_ingest_principal_arns" {
   type        = list(string)
   description = "IAM roles that may assume kb-ingest (the 6d CI role; optionally an operator role)."
 }
+
+# ---------------------------------------------------------------- 6d: audit
+variable "cloudtrail_bucket_name" {
+  type        = string
+  description = "CloudTrail log bucket; must equal bootstrap's cloudtrail_bucket_name (its guardrails name it)."
+}

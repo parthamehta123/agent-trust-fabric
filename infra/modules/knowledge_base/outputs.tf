@@ -22,3 +22,8 @@ output "data_source_id" {
   value       = aws_bedrockagent_data_source.this.data_source_id
   description = "Data source to sync after ingest (runbook)."
 }
+
+output "source_bucket_arn" {
+  value       = aws_s3_bucket.source.arn
+  description = "Corpus bucket ARN (CloudTrail data events)."
+}

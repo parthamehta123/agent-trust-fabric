@@ -1,0 +1,53 @@
+name: apply
+
+# ADR-0026 §26: manual only. The job runs in the `sandbox` environment (required reviewer), the
+# only subject the apply role trusts. It plans and applies that exact plan in one container.
+on:
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: Type "apply dev" to confirm
+        required: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: apply-dev
+  cancel-in-progress: false # never interrupt an apply
+
+jobs:
+  apply:
+    if: ${{ github.ref == 'refs/heads/main' && inputs.confirm == 'apply dev' && vars.ATF_APPLY_ROLE_ARN != '' }}
+    runs-on: ubuntu-latest
+    environment: sandbox
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      AWS_REGION: ${{ vars.ATF_AWS_REGION }}
+      AWS_ROLE_ARN: ${{ vars.ATF_APPLY_ROLE_ARN }}
+      AWS_ROLE_SESSION_NAME: gha-apply-${{ github.run_id }}
+      AWS_WEB_IDENTITY_TOKEN_FILE: ${{ runner.temp }}/oidc-token
+      ATF_ALLOW_AWS: "1"
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with: { persist-credentials: false }
+      - name: Non-secret inputs from repository variables
+        env:
+          TFVARS: ${{ vars.ATF_DEV_TFVARS }}
+          BACKEND: ${{ vars.ATF_DEV_BACKEND_HCL }}
+        run: |
+          printf '%s\n' "$TFVARS" > infra/envs/dev/terraform.tfvars
+          printf '%s\n' "$BACKEND" > infra/envs/dev/backend.hcl
+      - name: OIDC token for STS (no third-party action, no stored keys)
+        run: |
+          umask 077
+          curl -sSf -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
+            "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=sts.amazonaws.com" | jq -r .value > "$AWS_WEB_IDENTITY_TOKEN_FILE"
+      - run: make iac-tools && make iac-validate
+      - run: make iac-apply
+        env:
+          TF_VAR_verified_access_client_secret: ${{ secrets.ATF_VERIFIED_ACCESS_CLIENT_SECRET }}
+      - if: always()
+        run: rm -f "$AWS_WEB_IDENTITY_TOKEN_FILE" infra/envs/dev/terraform.tfvars infra/envs/dev/backend.hcl

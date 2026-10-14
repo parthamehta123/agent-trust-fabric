@@ -76,3 +76,12 @@ output "knowledge" {
   }
   description = "What the ingest runbook needs."
 }
+
+output "audit" {
+  value = {
+    trail_arn       = module.cloudtrail.trail_arn
+    bucket          = module.cloudtrail.bucket_name
+    data_event_arns = { s3 = [module.bundles.bucket_arn, module.knowledge_base.source_bucket_arn], lambda = [module.interceptor.function_arn], dynamodb = [local.tables["agents"], local.tables["mcp-servers"]] }
+  }
+  description = "What the trail records (asserted in tests)."
+}
