@@ -26,7 +26,7 @@ variable "interface_endpoints" {
   description = "Interface endpoint services (AWS APIs reachable without internet)."
   default = [
     "sts", "kms", "logs", "ecr.api", "ecr.dkr", "secretsmanager",
-    "bedrock-runtime", "bedrock-agent-runtime",
+    "bedrock-runtime", "bedrock-agent-runtime", "ssm",
   ]
 }
 

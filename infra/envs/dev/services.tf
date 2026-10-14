@@ -23,7 +23,7 @@ locals {
 
   # Single sources of truth: the IAM policies, the KMS key policies and the ALB rules are all
   # generated from these, so they cannot drift apart (asserted in tests).
-  sign_grants   = { "bundle-publisher" = "bundle", "mcp-gateway" = "tool-gateway", "a2a-gateway" = "a2a-gateway" }
+  sign_grants   = { "bundle-publisher" = "bundle", "mcp-gateway" = "tool-gateway", "a2a-gateway" = "a2a-gateway", "interceptor" = "interceptor" }
   tools_clients = ["mcp-gateway", "mcp-admin"]
 
   read_bundle = [
@@ -45,6 +45,7 @@ locals {
     "inference-gateway" = concat(local.read_bundle, [
       { Effect = "Allow", Action = ["dynamodb:UpdateItem"], Resource = local.tables["budgets"] },
       { Effect = "Allow", Action = ["kms:GenerateDataKey"], Resource = local.data_key },
+      { Effect = "Allow", Action = ["bedrock:ApplyGuardrail"], Resource = module.guardrail.guardrail_arn },
       ], length(var.allowed_model_arns) == 0 ? [] : [
       { Effect = "Allow", Action = ["bedrock:InvokeModel"], Resource = var.allowed_model_arns },
     ])
@@ -63,7 +64,9 @@ locals {
       { Effect = "Allow", Action = ["s3:PutObject"], Resource = local.bundle_obj },
       { Effect = "Allow", Action = ["kms:Decrypt", "kms:GenerateDataKey"], Resource = local.data_key },
     ]
-    "knowledge-server" = local.read_bundle
+    "knowledge-server" = concat(local.read_bundle, [
+      { Effect = "Allow", Action = ["bedrock:Retrieve"], Resource = module.knowledge_base.knowledge_base_arn },
+    ])
   }
 
   plane = {
@@ -117,7 +120,7 @@ locals {
 module "ecr" {
   source      = "../../modules/ecr"
   name        = local.name
-  services    = local.services
+  services    = concat(local.services, ["interceptor"])
   kms_key_arn = local.data_key
 }
 

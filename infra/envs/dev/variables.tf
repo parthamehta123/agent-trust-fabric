@@ -199,3 +199,28 @@ variable "a2a_internal_hosts" {
     error_message = "Exact lowercase FQDNs, each with at least one CIDR (no wildcards)."
   }
 }
+
+# ---------------------------------------------------------------- 6c-iii: edge + knowledge
+variable "ingress_agent" {
+  description = "The agent behind the ingress gateway: its AgentCore Runtime and its own AS."
+  type = object({
+    name                 = string
+    runtime_arn          = string
+    authorization_server = object({ id = string, audience = string })
+    scopes               = list(string)
+  })
+  validation {
+    condition     = can(regex("^[a-z0-9-]{1,48}$", var.ingress_agent.name)) && can(regex("^api://[a-z0-9-]{1,64}$", var.ingress_agent.authorization_server.audience)) && length(var.ingress_agent.scopes) > 0
+    error_message = "A slug name, an api://<slug> audience and explicit scopes."
+  }
+}
+
+variable "kb_source_bucket_name" {
+  type        = string
+  description = "Globally unique corpus bucket name."
+}
+
+variable "kb_ingest_principal_arns" {
+  type        = list(string)
+  description = "IAM roles that may assume kb-ingest (the 6d CI role; optionally an operator role)."
+}

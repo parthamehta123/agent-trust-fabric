@@ -126,8 +126,15 @@
 15. **AgentCore Gateway: our bundle is authoritative.**
     - The gateway uses a `CUSTOM_JWT` authorizer pinned to the IdP discovery URL, with
       `allowed_audience` and `allowed_clients`.
-    - A `REQUEST` interceptor Lambda runs the same `trustkit_policy` code: bundle verification,
-      `authorize_tool` and the delegated exchange. It does not pass request headers.
+    - An interceptor Lambda on **`REQUEST` and `RESPONSE`**, with **request headers passed**,
+      runs the same interceptor code as locally: binding, the ID-JAG/T2 exchange, and response
+      scanning.
+    - *Corrected in 6c-iii:* the first draft said REQUEST only, without headers. That
+      contradicted accepted contracts: ADR-0012 §6 and ADR-0013 require the response phase, and
+      ADR-0006/0009 bind `Authorization` plus `X-Subject-Token`. The compensating control is
+      ADR-0012 §4. The target's header allowlist is exactly the reserved `x-atf-*` set, and the
+      module refuses any credential-bearing header (a contract test keeps that list identical to
+      `trustkit.policy`).
     - There is **no** AgentCore Policy engine, so we never keep a second, unsigned copy of
       policy in Terraform state.
     - `exception_level` is left unset, so callers get no debug detail.
@@ -197,3 +204,37 @@
       isn't given one.
     - The CI IaC job still points at a placeholder path and doesn't run. Rewiring it to
       `make iac-validate` is 6d.
+
+22. **The interceptor's gateway id comes from SSM (6c-iii).**
+    - The gateway needs the Lambda's ARN, and the Lambda needs the gateway's AWS-assigned id,
+      because ADR-0012 §2 resolves the profile only from `GATEWAY_ARN`. That is a dependency
+      cycle.
+    - Terraform publishes the gateway id to one SSM parameter. The interceptor reads it once at
+      cold start (`ATF_GATEWAY_ID_PARAMETER`), binds it into its **single** profile, and still
+      matches it exactly.
+    - Unreadable, malformed, or more than one profile all mean deny-all (503).
+    - This is the one exception to §13 (inline config). The value is plan-visible drift.
+
+23. **Edge and knowledge resources (6c-iii).**
+    - **Interceptor:** ingress-only, with no bundle and no S3 or data-key grants. It signs as
+      the frontend client with its own KMS key, a new `sign_grants` entry.
+    - **Platform permissions:** ENI permissions (no resource-level support) sit in a separate
+      platform policy, conditioned to the VPC.
+    - **Image pull:** Lambda pulls its image under an ECR repository policy that names only this
+      function.
+    - **Gateway role:** may invoke only the interceptor and the one runtime, and use the data
+      key. A `check` refuses `lambda:*` in any task or function policy, because a direct invoke
+      with a forged client context would mint a T2 (TM-INT-03).
+    - **Bedrock grants:** only the inference gateway may call `bedrock:ApplyGuardrail`, and only
+      the knowledge server may call `bedrock:Retrieve`.
+    - **kb-ingest:** assumable only by listed roles (the 6d CI role). It may Put and Delete
+      under `corpus/` and nothing else. Syncing the data source is a runbook step.
+    - **SSM endpoint:** an `ssm` interface endpoint is added, since private subnets have no
+      internet path.
+
+24. **Unverified until a sandbox apply (A-8..A-11 in `architecture.md`):**
+    - the gateway's `protocol_type` for an AgentCore Runtime HTTP target (left unset);
+    - `jwt_passthrough` as the target credential provider, given the interceptor-set
+      `Authorization`;
+    - Bedrock KB `chunking_strategy = NONE` with `.metadata.json` sidecars on S3 Vectors;
+    - the `aws_kms_public_key` key-id validation behaviour (worked around with the alias, §14).

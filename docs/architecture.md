@@ -234,6 +234,14 @@ These are not yet confirmed.
   We assume override only, so reserved headers are always overwritten (ADR-0012).
 - A-6: Gateway behaviour when the interceptor errors or times out is undocumented. The
   interceptor never raises and always returns an explicit deny (ADR-0012).
+- A-8: An AgentCore Gateway with an AgentCore Runtime HTTP target needs no `protocol_type`
+  (ADR-0026 §24).
+- A-9: `jwt_passthrough` is an acceptable credential provider for that target, and the
+  interceptor-returned `Authorization` is what reaches the runtime (ADR-0012, ADR-0026 §24).
+- A-10: A Bedrock KB data source with `chunking_strategy = NONE` indexes one vector per object,
+  with `.metadata.json` attributes returned by `Retrieve`. This is A-3 in its concrete form.
+- A-11: Provider 6.66.0's `aws_kms_public_key` rejects key ids and key ARNs but accepts aliases.
+  Re-check on provider upgrades, and drop the alias indirection if fixed (ADR-0026 §14).
 
 [RFC 8693]: https://www.rfc-editor.org/rfc/rfc8693
 [RFC 7523]: https://www.rfc-editor.org/rfc/rfc7523

@@ -15,6 +15,7 @@ image_digests = {
   "agent-registry"    = "sha256:REPLACE"
   "bundle-publisher"  = "sha256:REPLACE"
   "knowledge-server"  = "sha256:REPLACE"
+  "interceptor"       = "sha256:REPLACE"
 }
 # verified_access_client_secret: set via TF_VAR_verified_access_client_secret, never in a file.
 
@@ -37,3 +38,13 @@ idp = {
 }
 model_routes       = { "claude-sonnet" = { provider_model = "bedrock/REPLACE-model-id" } }
 allowed_model_arns = ["arn:aws:bedrock:us-east-1::foundation-model/REPLACE-model-id"]
+
+# 6c-iii: the agent behind the ingress gateway, and the knowledge base.
+ingress_agent = {
+  name                 = "agent-alpha"
+  runtime_arn          = "arn:aws:bedrock-agentcore:us-east-1:000000000000:runtime/REPLACE"
+  authorization_server = { id = "ausREPLACE", audience = "api://agent-alpha" }
+  scopes               = ["agent.invoke", "kb.public.read"]
+}
+kb_source_bucket_name    = "atf-dev-kb-source-REPLACE"
+kb_ingest_principal_arns = ["arn:aws:iam::000000000000:role/REPLACE-ci-ingest"] # the 6d CI role

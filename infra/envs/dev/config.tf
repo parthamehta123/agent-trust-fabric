@@ -116,6 +116,8 @@ locals {
       ATF_BUDGET_TABLE           = local.table_names["budgets"]
       ATF_INFERENCE_PROFILE_JSON = jsonencode(local.inference_profile)
       ATF_MODEL_ROUTES_JSON      = jsonencode(var.model_routes)
+      ATF_GUARDRAIL_ID           = module.guardrail.guardrail_id
+      ATF_GUARDRAIL_VERSION      = module.guardrail.version
     })
     "a2a-gateway" = merge(local.bundle_reader, {
       ATF_A2A_EGRESS_PROFILE_JSON = jsonencode(local.a2a_egress)
@@ -138,9 +140,10 @@ locals {
       ATF_GUARDRAILS_CEDAR   = file("${path.module}/../../../policies/guardrails.cedar")
     }
     "knowledge-server" = merge(local.bundle_reader, {
-      ATF_KB_ISSUER   = local.as_urls["knowledge"].issuer
-      ATF_KB_AUDIENCE = local.as_urls["knowledge"].audience
-      ATF_KB_JWKS_URI = local.as_urls["knowledge"].jwks_uri
+      ATF_KB_ISSUER     = local.as_urls["knowledge"].issuer
+      ATF_KB_AUDIENCE   = local.as_urls["knowledge"].audience
+      ATF_KB_JWKS_URI   = local.as_urls["knowledge"].jwks_uri
+      ATF_KB_BEDROCK_ID = module.knowledge_base.knowledge_base_id
     })
   }
 

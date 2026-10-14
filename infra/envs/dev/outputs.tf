@@ -19,7 +19,7 @@ output "signing_keys" {
 }
 
 output "service_policies" {
-  value       = local.policies
+  value       = merge(local.policies, local.function_policies)
   description = "Effective task-role statements per service (reviewed and asserted in tests)."
 }
 
@@ -55,4 +55,24 @@ output "tools_clients" {
 output "service_environment" {
   value       = local.rendered_env
   description = "Rendered, non-secret runtime environment per service (reviewed and asserted in tests)."
+}
+
+output "interceptor_environment" {
+  value       = local.interceptor_env
+  description = "Rendered interceptor environment (asserted in tests)."
+}
+
+output "gateway_url" {
+  value       = module.gateway.gateway_url
+  description = "Ingress gateway URL for the frontend."
+}
+
+output "knowledge" {
+  value = {
+    source_bucket   = module.knowledge_base.source_bucket
+    ingest_role_arn = module.knowledge_base.ingest_role_arn
+    data_source_id  = module.knowledge_base.data_source_id
+    kb_id           = module.knowledge_base.knowledge_base_id
+  }
+  description = "What the ingest runbook needs."
 }

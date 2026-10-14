@@ -49,6 +49,24 @@ mock_provider "aws" {
   mock_resource "aws_s3_bucket" {
     defaults = { arn = "arn:aws:s3:::atf-dev-bundles-test" }
   }
+  mock_resource "aws_bedrock_guardrail" {
+    defaults = { guardrail_id = "gr0123456789", guardrail_arn = "arn:aws:bedrock:us-east-1:123456789012:guardrail/gr0123456789" }
+  }
+  mock_resource "aws_bedrock_guardrail_version" {
+    defaults = { version = "1" }
+  }
+  mock_resource "aws_s3vectors_index" {
+    defaults = { index_arn = "arn:aws:s3vectors:us-east-1:123456789012:bucket/atf-dev-vectors/index/atf-dev-chunks" }
+  }
+  mock_resource "aws_bedrockagent_knowledge_base" {
+    defaults = { id = "KBTEST12345", arn = "arn:aws:bedrock:us-east-1:123456789012:knowledge-base/KBTEST12345" }
+  }
+  mock_resource "aws_lambda_function" {
+    defaults = { arn = "arn:aws:lambda:us-east-1:123456789012:function:atf-dev-interceptor" }
+  }
+  mock_resource "aws_bedrockagentcore_gateway" {
+    defaults = { gateway_id = "atf-dev-ingress-abcde12345", gateway_url = "https://atf-dev-ingress-abcde12345.gateway.bedrock-agentcore.us-east-1.amazonaws.com" }
+  }
 }
 
 
@@ -73,7 +91,16 @@ variables {
     "agent-registry"    = "sha256:5555555555555555555555555555555555555555555555555555555555555555"
     "bundle-publisher"  = "sha256:6666666666666666666666666666666666666666666666666666666666666666"
     "knowledge-server"  = "sha256:7777777777777777777777777777777777777777777777777777777777777777"
+    "interceptor"       = "sha256:8888888888888888888888888888888888888888888888888888888888888888"
   }
+  ingress_agent = {
+    name                 = "agent-alpha"
+    runtime_arn          = "arn:aws:bedrock-agentcore:us-east-1:123456789012:runtime/agent_alpha-abc123"
+    authorization_server = { id = "aus-agent-alpha", audience = "api://agent-alpha" }
+    scopes               = ["agent.invoke", "kb.public.read"]
+  }
+  kb_source_bucket_name         = "atf-dev-kb-source-test"
+  kb_ingest_principal_arns      = ["arn:aws:iam::123456789012:role/atf-ci-ingest"]
   verified_access_client_secret = "test-only"
   idp = {
     base_url = "https://example.okta.com"
@@ -215,11 +242,11 @@ run "every_service_gets_the_env_its_code_reads" {
       for svc, keys in {
         "mcp-gateway"       = ["ATF_DDB_TABLE", "ATF_EGRESS_PROFILE_JSON", "ATF_TOOL_AUTHORITIES_JSON", "ATF_SSRF_INTERNAL_HOSTS", "ATF_BUNDLE_ISSUER", "ATF_BUNDLE_PUBLIC_KEY_PEM", "ATF_BUNDLE_S3_BUCKET", "ATF_BUNDLE_S3_KEY"]
         "mcp-admin"         = ["ATF_ADMIN_ISSUER", "ATF_ADMIN_AUDIENCE", "ATF_ADMIN_JWKS_URI", "ATF_DDB_TABLE", "ATF_TOOL_AUTHORITIES_JSON", "ATF_SSRF_INTERNAL_HOSTS"]
-        "inference-gateway" = ["ATF_BUDGET_TABLE", "ATF_INFERENCE_PROFILE_JSON", "ATF_MODEL_ROUTES_JSON", "ATF_BUNDLE_ISSUER", "ATF_BUNDLE_PUBLIC_KEY_PEM", "ATF_BUNDLE_S3_BUCKET", "ATF_BUNDLE_S3_KEY"]
+        "inference-gateway" = ["ATF_BUDGET_TABLE", "ATF_INFERENCE_PROFILE_JSON", "ATF_MODEL_ROUTES_JSON", "ATF_GUARDRAIL_ID", "ATF_GUARDRAIL_VERSION", "ATF_BUNDLE_ISSUER", "ATF_BUNDLE_PUBLIC_KEY_PEM", "ATF_BUNDLE_S3_BUCKET", "ATF_BUNDLE_S3_KEY"]
         "a2a-gateway"       = ["ATF_A2A_EGRESS_PROFILE_JSON", "ATF_A2A_PUBLIC_URL", "ATF_A2A_TARGET_SCOPES", "ATF_SSRF_INTERNAL_HOSTS", "ATF_BUNDLE_ISSUER", "ATF_BUNDLE_PUBLIC_KEY_PEM", "ATF_BUNDLE_S3_BUCKET", "ATF_BUNDLE_S3_KEY"]
         "agent-registry"    = ["ATF_REGISTRY_ISSUER", "ATF_REGISTRY_AUDIENCE", "ATF_REGISTRY_JWKS_URI", "ATF_REGISTRY_TABLE"]
         "bundle-publisher"  = ["ATF_REGISTRY_TABLE", "ATF_BUNDLE_ISSUER", "ATF_BUNDLE_SIGNING_KEY", "ATF_BUNDLE_S3_BUCKET", "ATF_BUNDLE_S3_KEY", "ATF_GUARDRAILS_CEDAR"]
-        "knowledge-server"  = ["ATF_KB_ISSUER", "ATF_KB_AUDIENCE", "ATF_KB_JWKS_URI", "ATF_BUNDLE_ISSUER", "ATF_BUNDLE_PUBLIC_KEY_PEM", "ATF_BUNDLE_S3_BUCKET", "ATF_BUNDLE_S3_KEY"]
+        "knowledge-server"  = ["ATF_KB_ISSUER", "ATF_KB_AUDIENCE", "ATF_KB_JWKS_URI", "ATF_KB_BEDROCK_ID", "ATF_BUNDLE_ISSUER", "ATF_BUNDLE_PUBLIC_KEY_PEM", "ATF_BUNDLE_S3_BUCKET", "ATF_BUNDLE_S3_KEY"]
         } : alltrue([
           length(setsubtract(keys, keys(output.service_environment[svc]))) == 0,
           output.service_environment[svc]["ATF_ENV"] == "dev",
@@ -274,7 +301,7 @@ run "bundle_key_pinned_not_granted" {
     # Verifiers never call KMS for it: only signers (sign_grants) hold any KMS signing action.
     condition = alltrue(flatten([
       for svc, stmts in output.service_policies : [
-        for st in stmts : contains(["bundle-publisher", "mcp-gateway", "a2a-gateway"], svc)
+        for st in stmts : contains(["bundle-publisher", "mcp-gateway", "a2a-gateway", "interceptor"], svc)
         if length(setintersection(toset(flatten([st.Action])), toset(["kms:Sign", "kms:GetPublicKey"]))) > 0
       ]
     ]))
@@ -364,5 +391,74 @@ run "guardrails_rendered_from_the_repo" {
   assert {
     condition     = output.service_environment["bundle-publisher"]["ATF_GUARDRAILS_CEDAR"] == file("../../../policies/guardrails.cedar")
     error_message = "The publisher's guardrails are the reviewed file, verbatim."
+  }
+}
+
+
+# ------------------------------------------------------------------ 6c-iii: edge + knowledge
+
+run "interceptor_is_ingress_only_and_bound_by_parameter" {
+  command = plan
+  assert {
+    condition = alltrue([
+      output.interceptor_environment["ATF_GATEWAY_ID_PARAMETER"] == "/atf-dev/interceptor/gateway-id",
+      length(jsondecode(output.interceptor_environment["ATF_PROFILES_JSON"]).profiles) == 1,
+      !anytrue([for k in keys(output.interceptor_environment) : startswith(k, "ATF_BUNDLE_") || endswith(k, "_PATH") || k == "ATF_CA_BUNDLE"]),
+    ])
+    error_message = "One profile bound from SSM at cold start; no bundle, no local-only settings."
+  }
+  assert {
+    condition     = jsondecode(output.interceptor_environment["ATF_PROFILES_JSON"]).profiles[0].ingress_clients["0oa-chat"] == output.signing_keys["interceptor"]
+    error_message = "The frontend client's assertions are signed with the interceptor's own KMS key."
+  }
+  assert {
+    condition = toset([for st in output.service_policies["interceptor"] : join(",", sort(flatten([st.Action])))]) == toset([
+      "kms:GetPublicKey,kms:Sign", "ssm:GetParameter",
+    ])
+    error_message = "The interceptor may sign with its key and read its gateway id; nothing else."
+  }
+}
+
+run "bedrock_access_scoped_to_one_service_each" {
+  command = plan
+  assert {
+    condition = [
+      for svc, stmts in output.service_policies : svc
+      if anytrue([for st in stmts : contains(flatten([st.Action]), "bedrock:ApplyGuardrail")])
+    ] == ["inference-gateway"]
+    error_message = "Only the inference gateway applies the guardrail."
+  }
+  assert {
+    condition = [
+      for svc, stmts in output.service_policies : svc
+      if anytrue([for st in stmts : contains(flatten([st.Action]), "bedrock:Retrieve")])
+    ] == ["knowledge-server"]
+    error_message = "Only the knowledge server retrieves from the KB."
+  }
+  assert {
+    condition = alltrue([
+      output.service_environment["inference-gateway"]["ATF_GUARDRAIL_VERSION"] == "1",
+      output.service_environment["inference-gateway"]["ATF_GUARDRAIL_ID"] == "gr0123456789",
+      output.service_environment["knowledge-server"]["ATF_KB_BEDROCK_ID"] == "KBTEST12345",
+    ])
+    error_message = "The gateway pins the published guardrail version; the knowledge server uses the KB."
+  }
+}
+
+run "nobody_invokes_lambda_but_the_gateway" {
+  command = plan
+  assert {
+    condition = !anytrue(flatten([
+      for svc, stmts in output.service_policies : [for st in stmts : anytrue([for a in flatten([st.Action]) : startswith(a, "lambda:")])]
+    ]))
+    error_message = "No task or function role may invoke Lambda."
+  }
+}
+
+run "kb_outputs_for_the_runbook" {
+  command = plan
+  assert {
+    condition     = output.knowledge.source_bucket == "atf-dev-kb-source-test"
+    error_message = "The ingest runbook needs the corpus bucket."
   }
 }

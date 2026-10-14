@@ -4,6 +4,10 @@ Environment:
 
 * ``ATF_ENV``: deployment environment. ``local`` enables ``local:`` signing keys.
 * ``ATF_PROFILES_PATH`` or ``ATF_PROFILES_JSON``: gateway profiles (ADR-0026 §13).
+* ``ATF_GATEWAY_ID_PARAMETER``: optional SSM parameter holding this Lambda's gateway id
+  (ADR-0026 §22). The gateway is created with this Lambda's ARN, so its AWS-assigned id can't be
+  inline. When set, the profiles document must hold exactly one profile; the fetched id becomes
+  its ``gateway_id`` and is still matched exactly against ``GATEWAY_ARN`` (ADR-0012 §2).
 * ``ATF_CA_BUNDLE``: optional. Restricts outbound TLS trust (local stack only).
 * ``ATF_LOCAL_KEYS_DIR``: directory of ``<name>.pem`` for ``local:<name>`` refs. Honoured only
   when ``ATF_ENV=local``.
@@ -17,12 +21,14 @@ runtime calls.
 from __future__ import annotations
 
 import contextlib
+import json
 import os
+import re
 import sys
 import threading
 import time
 from collections.abc import Callable, Mapping
-from typing import Any
+from typing import Any, Final
 
 from atf_interceptor.events import Shape, deny, request_id_from_context
 from atf_interceptor.handler import Handler, InterceptorDeps, make_handler
@@ -39,10 +45,38 @@ from trustkit_aws.signers import make_signer_factory
 from trustkit_http.endpoint import HttpxTokenEndpoint
 from trustkit_policy.runtime import policy_from_env
 
-__all__ = ["build_handler", "handler", "make_signer_factory"]
+__all__ = ["bind_gateway_id", "build_handler", "handler", "make_signer_factory"]
 
 
 SignerFactory = Callable[[str], KeySigner]
+ParameterFetch = Callable[[str], str]
+"""SSM parameter name -> value (``build_handler`` injects boto3 by default)."""
+
+_GATEWAY_ID: Final = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,99}$")
+
+
+def _ssm_fetch(region: str) -> ParameterFetch:
+    def fetch(name: str) -> str:
+        import boto3
+
+        value = boto3.client("ssm", region_name=region).get_parameter(Name=name)["Parameter"][
+            "Value"
+        ]
+        return str(value)
+
+    return fetch
+
+
+def bind_gateway_id(raw: bytes, gateway_id: str) -> bytes:
+    """Bind the fetched id into the single profile. Anything unexpected raises (deny-all)."""
+    if not _GATEWAY_ID.fullmatch(gateway_id):
+        raise ValueError("gateway id parameter is not a gateway id")
+    doc = json.loads(raw)
+    profiles = doc.get("profiles") if isinstance(doc, dict) else None
+    if not isinstance(profiles, list) or len(profiles) != 1 or not isinstance(profiles[0], dict):
+        raise ValueError("a parameter-bound gateway id needs exactly one profile")
+    profiles[0]["gateway_id"] = gateway_id
+    return json.dumps(doc).encode()
 
 
 def _deny_all(sink: AuditSink) -> Handler:
@@ -65,10 +99,17 @@ def _deny_all(sink: AuditSink) -> Handler:
     return handler
 
 
-def build_handler(env: Mapping[str, str]) -> Handler:
+def build_handler(
+    env: Mapping[str, str], *, fetch_parameter: ParameterFetch | None = None
+) -> Handler:
     sink = JsonLinesSink(sys.stdout)
     try:
-        registry = load_profiles(load_document(env, "ATF_PROFILES"))
+        raw_profiles = load_document(env, "ATF_PROFILES")
+        param = env.get("ATF_GATEWAY_ID_PARAMETER")
+        if param is not None:
+            fetch = fetch_parameter or _ssm_fetch(env.get("AWS_REGION", "us-east-1"))
+            raw_profiles = bind_gateway_id(raw_profiles, fetch(param).strip())
+        registry = load_profiles(raw_profiles)
         http = HttpxTokenEndpoint(ca_bundle_path=ca_bundle(env))
         resolvers: dict[str, KeyResolver] = {}
 

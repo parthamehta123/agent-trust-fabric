@@ -207,3 +207,60 @@ class TestBundleWiring:
         """Bundle configured but unusable (no source): cold-start failure -> deny-all handler."""
         env = {**self.base(tmp_path), "ATF_BUNDLE_ISSUER": "x"}
         assert status(build_handler(env)(event(), ctx())) == 503
+
+
+@pytest.mark.security
+class TestGatewayIdParameter:
+    """ADR-0026 §22: the AWS-assigned gateway id comes from one SSM parameter at cold start and is
+    still matched exactly against ``GATEWAY_ARN`` (ADR-0012 §2). Every failure is deny-all."""
+
+    def env(self, tmp_path: pathlib.Path, *profiles: dict[str, Any]) -> dict[str, str]:
+        write_key(tmp_path / "keys", "chat")
+        return {
+            "ATF_ENV": "local",
+            "ATF_PROFILES_JSON": json.dumps({"version": 1, "profiles": list(profiles)}),
+            "ATF_GATEWAY_ID_PARAMETER": "/atf-dev/interceptor/gateway-id",
+            "ATF_LOCAL_KEYS_DIR": str(tmp_path / "keys"),
+            "ATF_CA_BUNDLE": write_ca(tmp_path),
+        }
+
+    def test_bound_id_is_matched_exactly(self, tmp_path: pathlib.Path) -> None:
+        asked: list[str] = []
+
+        def fetch(name: str) -> str:
+            asked.append(name)
+            return "gw-alpha\n"
+
+        env = self.env(tmp_path, profile_doc(gateway_id="bound-at-cold-start"))
+        assert status(build_handler(env, fetch_parameter=fetch)(event(), ctx())) == 401
+        assert asked == ["/atf-dev/interceptor/gateway-id"]
+
+    def test_other_gateway_is_unknown(self, tmp_path: pathlib.Path) -> None:
+        env = self.env(tmp_path, profile_doc(gateway_id="x"))
+        assert (
+            status(build_handler(env, fetch_parameter=lambda n: "gw-beta")(event(), ctx())) == 403
+        )
+
+    @pytest.mark.parametrize("value", ["", "../gw-alpha", "gw alpha", "-gw", "g" * 101])
+    def test_malformed_id_denies_everything(self, tmp_path: pathlib.Path, value: str) -> None:
+        env = self.env(tmp_path, profile_doc(gateway_id="x"))
+        assert status(build_handler(env, fetch_parameter=lambda n: value)(event(), ctx())) == 503
+
+    def test_unreadable_parameter_denies_everything(self, tmp_path: pathlib.Path) -> None:
+        def fetch(name: str) -> str:
+            raise RuntimeError("AccessDenied")
+
+        env = self.env(tmp_path, profile_doc(gateway_id="x"))
+        assert status(build_handler(env, fetch_parameter=fetch)(event(), ctx())) == 503
+
+    def test_needs_exactly_one_profile(self, tmp_path: pathlib.Path) -> None:
+        """Binding one id into several profiles would be ambiguous: refuse instead."""
+        env = self.env(tmp_path, profile_doc(gateway_id="a"), profile_doc(gateway_id="b"))
+        assert (
+            status(build_handler(env, fetch_parameter=lambda n: "gw-alpha")(event(), ctx())) == 503
+        )
+        empty = self.env(tmp_path)
+        assert (
+            status(build_handler(empty, fetch_parameter=lambda n: "gw-alpha")(event(), ctx()))
+            == 503
+        )

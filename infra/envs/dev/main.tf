@@ -21,6 +21,7 @@ module "kms" {
     (local.sign_grants["bundle-publisher"]) = [module.svc["bundle-publisher"].task_role_arn]
     (local.sign_grants["mcp-gateway"])      = [module.svc["mcp-gateway"].task_role_arn]
     (local.sign_grants["a2a-gateway"])      = [module.svc["a2a-gateway"].task_role_arn]
+    (local.sign_grants["interceptor"])      = [module.interceptor.role_arn]
   }
 }
 
@@ -55,7 +56,7 @@ module "budget" {
 
 check "sign_grants_wired" {
   assert {
-    condition     = toset(keys(local.sign_grants)) == toset(["bundle-publisher", "mcp-gateway", "a2a-gateway"])
+    condition     = toset(keys(local.sign_grants)) == toset(["bundle-publisher", "mcp-gateway", "a2a-gateway", "interceptor"])
     error_message = "A signing grant was added or removed: wire its role in module.kms.signers too."
   }
 }
