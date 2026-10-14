@@ -7,3 +7,8 @@ output "signing_key_arns" {
   value       = { for k, v in aws_kms_key.signing : k => v.arn }
   description = "Signing key ARNs by name ('bundle' plus client keys)."
 }
+
+output "signing_key_aliases" {
+  value       = { for k, a in aws_kms_alias.signing : k => a.name }
+  description = "Signing key aliases (managed here, so any repointing shows as drift)."
+}

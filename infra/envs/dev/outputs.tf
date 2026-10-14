@@ -51,3 +51,8 @@ output "tools_clients" {
   value       = local.tools_clients
   description = "Services allowed to reach tool servers."
 }
+
+output "service_environment" {
+  value       = local.rendered_env
+  description = "Rendered, non-secret runtime environment per service (reviewed and asserted in tests)."
+}

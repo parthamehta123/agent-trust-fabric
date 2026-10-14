@@ -48,6 +48,24 @@ def jwk_file(tmp_path: pathlib.Path) -> pathlib.Path:
     return p
 
 
+def pem_of(signer: object) -> str:
+    """The PEM of a test signer's public key, rebuilt from its JWK (as KMS would return it)."""
+    import base64
+
+    from cryptography.hazmat.primitives import serialization as ser
+    from cryptography.hazmat.primitives.asymmetric import ec
+
+    jwk = signer.public_jwk()  # type: ignore[attr-defined]
+
+    def coord(v: str) -> int:
+        return int.from_bytes(base64.urlsafe_b64decode(v + "=" * (-len(v) % 4)), "big")
+
+    key = ec.EllipticCurvePublicNumbers(
+        coord(jwk["x"]), coord(jwk["y"]), ec.SECP256R1()
+    ).public_key()
+    return key.public_bytes(ser.Encoding.PEM, ser.PublicFormat.SubjectPublicKeyInfo).decode()
+
+
 def env(jwk_file: pathlib.Path, **over: str) -> dict[str, str]:
     e = {"ATF_BUNDLE_ISSUER": ISS, "ATF_BUNDLE_PUBLIC_JWK_PATH": str(jwk_file)}
     e.update(over)
@@ -113,6 +131,45 @@ class TestSettings:
         """An ambiguous pin is a cold-start failure, never "first one wins"."""
         e = env(jwk_file, ATF_BUNDLE_PUBLIC_JWK_JSON=json.dumps(SIGNER.public_jwk()))
         with pytest.raises(ValueError, match="not both"):
+            BundleSettings.from_env(e)
+
+    def test_pem_pin_matches_jwk_pin(self) -> None:
+        """A PEM pin (from ``aws_kms_public_key``) yields the very same JWK, and so the same kid."""
+        e = {"ATF_BUNDLE_ISSUER": ISS, "ATF_BUNDLE_PUBLIC_KEY_PEM": pem_of(SIGNER)}
+        assert BundleSettings.from_env(e).public_jwk == SIGNER.public_jwk()
+
+    @pytest.mark.security
+    def test_pem_and_jwk_refused(self, jwk_file: pathlib.Path) -> None:
+        e = env(jwk_file, ATF_BUNDLE_PUBLIC_KEY_PEM=pem_of(SIGNER))
+        with pytest.raises(ValueError, match="not both"):
+            BundleSettings.from_env(e)
+
+    @pytest.mark.security
+    @pytest.mark.parametrize("kind", ["p384", "rsa", "private", "garbage"])
+    def test_bad_pem_refused(self, kind: str) -> None:
+        from cryptography.hazmat.primitives import serialization as ser
+        from cryptography.hazmat.primitives.asymmetric import ec, rsa
+
+        if kind == "p384":
+            pem = (
+                ec.generate_private_key(ec.SECP384R1())
+                .public_key()
+                .public_bytes(ser.Encoding.PEM, ser.PublicFormat.SubjectPublicKeyInfo)
+            )
+        elif kind == "rsa":
+            pem = (
+                rsa.generate_private_key(65537, 2048)
+                .public_key()
+                .public_bytes(ser.Encoding.PEM, ser.PublicFormat.SubjectPublicKeyInfo)
+            )
+        elif kind == "private":
+            pem = ec.generate_private_key(ec.SECP256R1()).private_bytes(
+                ser.Encoding.PEM, ser.PrivateFormat.PKCS8, ser.NoEncryption()
+            )
+        else:
+            pem = b"-----BEGIN PUBLIC KEY-----\nAAAA\n-----END PUBLIC KEY-----\n"
+        e = {"ATF_BUNDLE_ISSUER": ISS, "ATF_BUNDLE_PUBLIC_KEY_PEM": pem.decode()}
+        with pytest.raises(ValueError, match="public"):
             BundleSettings.from_env(e)
 
     def test_missing_vars(self, jwk_file: pathlib.Path) -> None:

@@ -27,7 +27,14 @@ from atf_mcp_gateway.snapshot import SnapshotError, take_snapshot
 from trustkit.jwt import TokenValidationError, TokenValidator
 from trustkit.profiles import ScannerFailureMode
 from trustkit.scanning import ContentScanner, Direction, Verdict, scan_with_policy
-from trustkit_http.ssrf import Network, Resolver, SsrfError, default_resolver, vet_url
+from trustkit_http.ssrf import (
+    InternalHosts,
+    Network,
+    Resolver,
+    SsrfError,
+    default_resolver,
+    vet_url,
+)
 
 ADMIN_SCOPE: Final = "mcp.admin"
 _BEARER: Final = re.compile(r"^[Bb][Ee][Aa][Rr][Ee][Rr] ([A-Za-z0-9._~+/=-]+)$")
@@ -89,10 +96,12 @@ class AdminService:
         audiences: frozenset[str],
         resolver: Resolver = default_resolver,
         allow: frozenset[Network] = frozenset(),
+        internal_hosts: InternalHosts | None = None,
     ) -> None:
         """``audiences``: delegated-token audiences with a configured authority. Token-mode
         enrolment for any other audience is refused (no arbitrary AS, no cross-tool replay)."""
         self._allow, self._audiences = allow, audiences
+        self._internal = dict(internal_hosts or {})
         self._store, self._fetch, self._scanner, self._resolver = (
             store,
             fetch_tools,
@@ -129,7 +138,7 @@ class AdminService:
         elif audience is not None or secret_arn is None or not _SECRET_ARN.fullmatch(secret_arn):
             raise AdminError(AdminFailure.INVALID, "delegation none needs a Secrets Manager ARN")
         try:
-            vet_url(url, resolver=self._resolver, allow=self._allow)
+            vet_url(url, resolver=self._resolver, allow=self._allow, internal_hosts=self._internal)
         except SsrfError:
             raise AdminError(AdminFailure.INVALID, "url rejected by egress policy") from None
         record = ServerRecord(

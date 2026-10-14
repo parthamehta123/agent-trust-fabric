@@ -6,6 +6,11 @@ loopback, link-local (incl. 169.254.169.254), CGNAT 100.64/10, multicast, reserv
 benchmarking, documentation, or IPv4-mapped/NAT64 forms of those. One bad answer poisons the set,
 so a resolver can't mix in an internal address.
 
+Internal targets in a real deployment (a tool server behind the internal tools ALB, an agent
+runtime) are reachable only as **named internal hosts** (ADR-0026 §19,
+``ATF_SSRF_INTERNAL_HOSTS``). The hostname must match an entry exactly, and **every** resolved
+address must sit inside that entry's private CIDRs. Nothing else about the private range opens up.
+
 ``PinnedClient`` re-vets on **every call** and connects to the vetted IP, with ``Host`` and SNI set
 to the hostname. The certificate is checked against the hostname, so a DNS rebind between check
 and connect can't redirect the request. Redirects are never followed and bodies are size-capped.
@@ -40,6 +45,10 @@ _LABEL: Final = re.compile(r"^(?!-)[a-z0-9-]{1,63}(?<!-)$")
 
 
 Network = ipaddress.IPv4Network | ipaddress.IPv6Network
+InternalHosts = Mapping[str, frozenset[Network]]
+"""Exact FQDN -> the private networks all of its addresses must fall in."""
+
+MAX_INTERNAL_HOSTS: Final = 64
 
 
 class SsrfConfigError(ValueError):
@@ -57,20 +66,59 @@ def parse_local_allowlist(env: Mapping[str, str]) -> frozenset[Network]:
         return frozenset()
     if env.get("ATF_ENV") != "local":
         raise SsrfConfigError("an SSRF allowlist is only permitted with ATF_ENV=local")
-    nets: set[Network] = set()
-    for part in raw.split(","):
-        try:
-            net = ipaddress.ip_network(part.strip(), strict=True)
-        except ValueError:
-            raise SsrfConfigError("invalid CIDR in SSRF allowlist") from None
-        if isinstance(net, ipaddress.IPv4Network):
-            ok = net.prefixlen >= 16 and any(net.subnet_of(r) for r in _RFC1918)
-        else:
-            ok = net.prefixlen >= 48 and net.subnet_of(_ULA)
-        if not ok:
-            raise SsrfConfigError("SSRF allowlist entries must be narrow private test subnets")
-        nets.add(net)
-    return frozenset(nets)
+    return frozenset(_private_net(part) for part in raw.split(","))
+
+
+def _private_net(raw: object) -> Network:
+    """A narrow RFC 1918 (>= /16) or ULA (>= /48) network. Loopback, link-local (including the
+    metadata address), CGNAT and public space can never qualify."""
+    if not isinstance(raw, str):
+        raise SsrfConfigError("invalid CIDR in SSRF allowlist")
+    try:
+        net = ipaddress.ip_network(raw.strip(), strict=True)
+    except ValueError:
+        raise SsrfConfigError("invalid CIDR in SSRF allowlist") from None
+    if isinstance(net, ipaddress.IPv4Network):
+        ok = net.prefixlen >= 16 and any(net.subnet_of(r) for r in _RFC1918)
+    else:
+        ok = net.prefixlen >= 48 and net.subnet_of(_ULA)
+    if not ok:
+        raise SsrfConfigError("SSRF allowlist entries must be narrow private subnets")
+    return net
+
+
+def _is_fqdn(hostname: str) -> bool:
+    """At least two DNS labels, and not an IPv4 literal (an all-numeric last label never is a
+    real TLD)."""
+    labels = hostname.split(".")
+    return (
+        len(labels) >= 2
+        and all(_LABEL.fullmatch(lbl) for lbl in labels)
+        and not labels[-1].isdigit()
+    )
+
+
+def parse_internal_hosts(env: Mapping[str, str]) -> InternalHosts:
+    """``ATF_SSRF_INTERNAL_HOSTS``: a JSON object of exact lowercase FQDN -> list of private CIDRs
+    (ADR-0026 §19). Allowed in any environment, because each entry names one host and confines
+    its addresses. Unset or empty gives no internal hosts. Anything malformed raises."""
+    raw = env.get("ATF_SSRF_INTERNAL_HOSTS", "").strip()
+    if not raw:
+        return {}
+    try:
+        doc = json.loads(raw)
+    except ValueError:
+        raise SsrfConfigError("internal hosts must be a JSON object") from None
+    if not isinstance(doc, dict) or len(doc) > MAX_INTERNAL_HOSTS:
+        raise SsrfConfigError("internal hosts must be a JSON object of at most 64 entries")
+    out: dict[str, frozenset[Network]] = {}
+    for host, cidrs in doc.items():
+        if not isinstance(host, str) or host != host.lower() or not _is_fqdn(host):
+            raise SsrfConfigError("internal host names must be exact lowercase FQDNs")
+        if not isinstance(cidrs, list) or not cidrs:
+            raise SsrfConfigError("each internal host needs a non-empty list of CIDRs")
+        out[host] = frozenset(_private_net(c) for c in cidrs)
+    return out
 
 
 class SsrfError(ValueError):
@@ -116,6 +164,7 @@ def vet_url(
     *,
     resolver: Resolver = default_resolver,
     allow: frozenset[Network] = frozenset(),
+    internal_hosts: InternalHosts | None = None,
 ) -> VettedTarget:
     if "\\" in url or "#" in url or not url.startswith("https://"):
         raise SsrfError("url must be https without fragments or backslashes")
@@ -129,8 +178,7 @@ def vet_url(
         pass
     else:
         raise SsrfError("ip literals are not allowed; enrol a DNS name")
-    labels = hostname.rstrip(".").split(".")
-    if len(labels) < 2 or not all(_LABEL.fullmatch(lbl) for lbl in labels):
+    if not _is_fqdn(hostname.rstrip(".")):
         raise SsrfError("hostname must be a fully qualified DNS name")
     try:
         explicit = parts.port
@@ -150,7 +198,13 @@ def vet_url(
         ips = [ipaddress.ip_address(a) for a in answers]
     except ValueError:
         raise SsrfError("resolver returned an invalid address") from None
-    if any(is_forbidden_ip(ip) and not any(ip in net for net in allow) for ip in ips):
+    confined = (internal_hosts or {}).get(hostname.rstrip("."))
+    if confined is not None:
+        # A named internal host: every answer must be inside its networks (public ones too, so a
+        # poisoned record can't send this host's traffic anywhere else).
+        if not all(any(ip in net for net in confined) for ip in ips):
+            raise SsrfError("internal host resolves outside its allowed networks")
+    elif any(is_forbidden_ip(ip) and not any(ip in net for net in allow) for ip in ips):
         # One internal answer poisons the set; never say which (log-safe, no recon help).
         raise SsrfError("hostname resolves to a non-public address")
     path = (parts.path or "/") + (f"?{parts.query}" if parts.query else "")
@@ -167,9 +221,11 @@ class PinnedClient:
         max_response_bytes: int = DEFAULT_MAX_RESPONSE_BYTES,
         transport: httpx.BaseTransport | None = None,
         allow: frozenset[Network] = frozenset(),
+        internal_hosts: InternalHosts | None = None,
     ) -> None:
         self._resolver = resolver
         self._allow = allow
+        self._internal = dict(internal_hosts or {})
         self._max = max_response_bytes
         self._client = httpx.Client(
             verify=tls_context(ca_bundle_path),
@@ -184,7 +240,9 @@ class PinnedClient:
         """Vet, pin, POST. Returns (status, JSON object or None if unacceptable).
 
         Raises ``SsrfError`` (vetting) or ``httpx.HTTPError`` (transport)."""
-        t = vet_url(url, resolver=self._resolver, allow=self._allow)  # every call: no rebinding
+        t = vet_url(  # every call: no rebinding
+            url, resolver=self._resolver, allow=self._allow, internal_hosts=self._internal
+        )
         host = f"[{t.ip}]" if ":" in t.ip else t.ip
         host_header = t.hostname if t.port == 443 else f"{t.hostname}:{t.port}"
         request = self._client.build_request(

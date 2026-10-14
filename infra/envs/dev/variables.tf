@@ -131,3 +131,71 @@ variable "admin_groups" {
   default     = ["atf-security-approvers", "atf-registry-approvers"]
   description = "IdP groups allowed onto the admin plane."
 }
+
+# ---------------------------------------------------------------- 6c: runtime config
+variable "idp" {
+  description = <<-EOT
+    The IdP (Okta) by convention (ADR-0026 §20): issuer {base_url}/oauth2/{id}, JWKS /v1/keys,
+    token /v1/token. authorization_servers needs workload, inference, registry, admin, ingress and
+    knowledge; tool_authorization_servers are the tool ASes delegated tokens may be minted at.
+  EOT
+  type = object({
+    base_url                   = string
+    authorization_servers      = map(object({ id = string, audience = string }))
+    tool_authorization_servers = optional(map(object({ id = string, audience = string })), {})
+    clients = object({
+      tool_gateway = string
+      a2a_gateway  = string
+      frontend     = string
+    })
+  })
+  validation {
+    condition     = can(regex("^https://[a-z0-9.-]+$", var.idp.base_url))
+    error_message = "idp.base_url must be https://<host> with no path or trailing slash."
+  }
+  validation {
+    condition     = length(setsubtract(["workload", "inference", "registry", "admin", "ingress", "knowledge"], keys(var.idp.authorization_servers))) == 0
+    error_message = "idp.authorization_servers needs workload, inference, registry, admin, ingress and knowledge."
+  }
+  validation {
+    condition = alltrue([
+      for a in concat(values(var.idp.authorization_servers), values(var.idp.tool_authorization_servers)) :
+      can(regex("^[A-Za-z0-9-]{1,64}$", a.id)) && can(regex("^api://[a-z0-9-]{1,64}$", a.audience))
+    ])
+    error_message = "Each AS needs a slug id and an api://<slug> audience."
+  }
+  validation {
+    condition = length(distinct([
+      for a in concat(values(var.idp.authorization_servers), values(var.idp.tool_authorization_servers)) : a.audience
+    ])) == length(var.idp.authorization_servers) + length(var.idp.tool_authorization_servers)
+    error_message = "Every AS keeps its own audience (no cross-tool token replay, ADR-0025 §8)."
+  }
+}
+
+variable "model_routes" {
+  type        = map(object({ provider_model = string }))
+  description = "Logical model -> provider model (Bedrock via LiteLLM). api_base is local-only and cannot be set here."
+  validation {
+    condition     = length(var.model_routes) > 0 && alltrue([for r in values(var.model_routes) : startswith(r.provider_model, "bedrock/")])
+    error_message = "In AWS every route goes to Bedrock (bedrock/<model id>)."
+  }
+}
+
+variable "a2a_target_scopes" {
+  type        = list(string)
+  default     = ["agent.invoke"]
+  description = "Scopes the A2A gateway requests at a target agent's AS."
+}
+
+variable "a2a_internal_hosts" {
+  type        = map(list(string))
+  default     = {}
+  description = "Agent runtime FQDN -> private CIDRs its addresses must fall in (ADR-0026 §19)."
+  validation {
+    condition = alltrue([
+      for h, cidrs in var.a2a_internal_hosts :
+      can(regex("^([a-z0-9-]{1,63}\\.)+[a-z][a-z0-9-]{0,62}$", h)) && length(cidrs) > 0
+    ])
+    error_message = "Exact lowercase FQDNs, each with at least one CIDR (no wildcards)."
+  }
+}

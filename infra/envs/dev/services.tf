@@ -204,12 +204,7 @@ module "svc" {
   rule_priority         = try(local.plane[each.key].priority, null)
 
   entry_point = each.key == "bundle-publisher" ? ["python", "-m", "atf_agent_registry.publish"] : null
-  environment = {
-    ATF_ENV              = var.environment
-    AWS_REGION           = local.region
-    ATF_BUNDLE_S3_BUCKET = module.bundles.bucket_name
-    ATF_BUNDLE_S3_KEY    = "bundle.jws"
-  }
+  environment = local.rendered_env[each.key] # config.tf
 
   egress_security_group_ids = local.egress_sg[each.key]
   egress_prefix_list_ids    = local.egress_pl[each.key]

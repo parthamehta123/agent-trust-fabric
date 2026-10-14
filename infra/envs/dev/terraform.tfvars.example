@@ -3,3 +3,37 @@ allowed_account_ids = ["000000000000"] # your sandbox account
 azs                 = ["us-east-1a", "us-east-1b"]
 bundle_bucket_name  = "atf-dev-bundles-REPLACE"
 budget_alert_emails = ["you@example.com"]
+
+# 6b: a domain you own; planes resolve privately as <plane>.<domain>.
+domain         = "atf.example.com"
+public_zone_id = "Z0000000000000000000"
+image_digests = {
+  "mcp-gateway"       = "sha256:REPLACE"
+  "mcp-admin"         = "sha256:REPLACE"
+  "inference-gateway" = "sha256:REPLACE"
+  "a2a-gateway"       = "sha256:REPLACE"
+  "agent-registry"    = "sha256:REPLACE"
+  "bundle-publisher"  = "sha256:REPLACE"
+  "knowledge-server"  = "sha256:REPLACE"
+}
+# verified_access_client_secret: set via TF_VAR_verified_access_client_secret, never in a file.
+
+# 6c: Okta by convention (ADR-0026 §20). Each AS keeps its own audience.
+idp = {
+  base_url = "https://example.okta.com"
+  authorization_servers = {
+    workload  = { id = "ausREPLACE", audience = "api://tool-gateway" }
+    inference = { id = "ausREPLACE", audience = "api://inference-gateway" }
+    registry  = { id = "ausREPLACE", audience = "api://agent-registry" }
+    admin     = { id = "ausREPLACE", audience = "api://mcp-admin" }
+    ingress   = { id = "ausREPLACE", audience = "api://agent-ingress" }
+    knowledge = { id = "ausREPLACE", audience = "api://knowledge" }
+  }
+  tool_authorization_servers = {
+    tickets = { id = "ausREPLACE", audience = "api://tool-tickets" }
+  }
+  # Register each client's JWKS (its KMS public key) in Okta: private_key_jwt, no secrets.
+  clients = { tool_gateway = "0oaREPLACE", a2a_gateway = "0oaREPLACE", frontend = "0oaREPLACE" }
+}
+model_routes       = { "claude-sonnet" = { provider_model = "bedrock/REPLACE-model-id" } }
+allowed_model_arns = ["arn:aws:bedrock:us-east-1::foundation-model/REPLACE-model-id"]

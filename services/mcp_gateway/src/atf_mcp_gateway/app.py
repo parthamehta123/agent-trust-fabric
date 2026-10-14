@@ -36,7 +36,7 @@ from atf_mcp_gateway.admin import (
 from atf_mcp_gateway.proxy import Authorizer, McpProxy
 from atf_mcp_gateway.servers import Delegation, ServerRecord
 from trustkit.binding import ActorBinding, ActorBindingError
-from trustkit.config import load_document
+from trustkit.config import ca_bundle, load_document
 from trustkit.exchange import KeyResolverFactory
 from trustkit.jwt import TokenValidator
 from trustkit_policy.bundle import LoadedBundle
@@ -309,14 +309,15 @@ def _common(env: Mapping[str, str]) -> dict[str, Any]:
     from atf_mcp_gateway.store_dynamo import DynamoServerStore
     from trustkit.jwt import JwksKeyResolver, KeyResolver
     from trustkit_http.endpoint import HttpxTokenEndpoint
-    from trustkit_http.ssrf import PinnedClient, parse_local_allowlist
+    from trustkit_http.ssrf import PinnedClient, parse_internal_hosts, parse_local_allowlist
 
     ca, table, region = (
-        env["ATF_CA_BUNDLE"],
+        ca_bundle(env),
         env["ATF_DDB_TABLE"],
         env.get("AWS_REGION", "us-east-1"),
     )
     allow = parse_local_allowlist(env)  # raises outside ATF_ENV=local (ADR-0018 §1)
+    internal = parse_internal_hosts(env)  # named internal hosts only (ADR-0026 §19)
     from atf_mcp_gateway.authorities import load_authorities
 
     authorities = load_authorities(load_document(env, "ATF_TOOL_AUTHORITIES"))
@@ -334,10 +335,11 @@ def _common(env: Mapping[str, str]) -> dict[str, Any]:
         "http": http,
         "jwks": jwks,
         "allow": allow,
+        "internal": internal,
         "ddb": ddb,
         "table": table,
         "store": DynamoServerStore(ddb, table),
-        "upstream": PinnedClient(ca_bundle_path=ca, allow=allow),
+        "upstream": PinnedClient(ca_bundle_path=ca, allow=allow, internal_hosts=internal),
         "region": region,
         "authorities": authorities,
     }
@@ -424,6 +426,7 @@ def build_admin_app(env: Mapping[str, str]) -> FastAPI:
         scanner=LocalRulesScanner(),
         audiences=frozenset(c["authorities"]),
         allow=c["allow"],
+        internal_hosts=c["internal"],
     )
     return create_admin_app(admin, validator)
 

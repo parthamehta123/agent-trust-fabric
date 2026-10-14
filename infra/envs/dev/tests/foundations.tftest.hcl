@@ -9,6 +9,10 @@ mock_provider "aws" {
   mock_data "aws_region" {
     defaults = { region = "us-east-1", name = "us-east-1" }
   }
+  mock_data "aws_kms_public_key" {
+    # Test-only P-256 public key (no private half exists anywhere).
+    defaults = { public_key_pem = "-----BEGIN PUBLIC KEY-----\nMFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEl8kDwiphFQn5u2NG0+rgSZe0d0tj\nto7pa46BroT6zYTQGCzXvO7i6okgDFfuGpeAfbysM1PpWh+vCUmgbxA/sw==\n-----END PUBLIC KEY-----\n" }
+  }
   mock_resource "aws_cloudwatch_log_group" {
     defaults = { arn = "arn:aws:logs:us-east-1:123456789012:log-group:/atf-dev/vpc-flow-logs" }
   }
@@ -19,7 +23,7 @@ mock_provider "aws" {
     defaults = { id = "sg-shared-mock" }
   }
   mock_resource "aws_kms_key" {
-    defaults = { arn = "arn:aws:kms:us-east-1:123456789012:key/shared-mock" }
+    defaults = { arn = "arn:aws:kms:us-east-1:123456789012:key/22222222-2222-2222-2222-222222222222" }
   }
   mock_resource "aws_lb" {
     defaults = { arn = "arn:aws:elasticloadbalancing:us-east-1:123456789012:loadbalancer/app/atf/0123456789abcdef", dns_name = "internal-atf.elb.amazonaws.com", zone_id = "Z35SXDOTRQ7X7K" }
@@ -71,6 +75,22 @@ variables {
     "knowledge-server"  = "sha256:7777777777777777777777777777777777777777777777777777777777777777"
   }
   verified_access_client_secret = "test-only"
+  idp = {
+    base_url = "https://example.okta.com"
+    authorization_servers = {
+      workload  = { id = "aus-workload", audience = "api://tool-gateway" }
+      inference = { id = "aus-inference", audience = "api://inference-gateway" }
+      registry  = { id = "aus-registry", audience = "api://agent-registry" }
+      admin     = { id = "aus-admin", audience = "api://mcp-admin" }
+      ingress   = { id = "aus-ingress", audience = "api://agent-ingress" }
+      knowledge = { id = "aus-knowledge", audience = "api://knowledge" }
+    }
+    tool_authorization_servers = {
+      tickets = { id = "aus-tickets", audience = "api://tool-tickets" }
+    }
+    clients = { tool_gateway = "0oa-tool-gateway", a2a_gateway = "0oa-a2a-gateway", frontend = "0oa-chat" }
+  }
+  model_routes = { "claude-sonnet" = { provider_model = "bedrock/anthropic.claude-sonnet-test-v1:0" } }
 }
 
 run "plans_cleanly" {
@@ -181,5 +201,168 @@ run "admin_plane_closed_without_verified_access" {
   assert {
     condition     = length(output.plane_sources.admin) == 0
     error_message = "With Verified Access off, nothing reaches the admin plane."
+  }
+}
+
+
+# ------------------------------------------------------------------ 6c-ii: runtime config
+
+run "every_service_gets_the_env_its_code_reads" {
+  # Lists come from the services' own env reads (build_app / app_from_env / publish main).
+  command = plan
+  assert {
+    condition = alltrue([
+      for svc, keys in {
+        "mcp-gateway"       = ["ATF_DDB_TABLE", "ATF_EGRESS_PROFILE_JSON", "ATF_TOOL_AUTHORITIES_JSON", "ATF_SSRF_INTERNAL_HOSTS", "ATF_BUNDLE_ISSUER", "ATF_BUNDLE_PUBLIC_KEY_PEM", "ATF_BUNDLE_S3_BUCKET", "ATF_BUNDLE_S3_KEY"]
+        "mcp-admin"         = ["ATF_ADMIN_ISSUER", "ATF_ADMIN_AUDIENCE", "ATF_ADMIN_JWKS_URI", "ATF_DDB_TABLE", "ATF_TOOL_AUTHORITIES_JSON", "ATF_SSRF_INTERNAL_HOSTS"]
+        "inference-gateway" = ["ATF_BUDGET_TABLE", "ATF_INFERENCE_PROFILE_JSON", "ATF_MODEL_ROUTES_JSON", "ATF_BUNDLE_ISSUER", "ATF_BUNDLE_PUBLIC_KEY_PEM", "ATF_BUNDLE_S3_BUCKET", "ATF_BUNDLE_S3_KEY"]
+        "a2a-gateway"       = ["ATF_A2A_EGRESS_PROFILE_JSON", "ATF_A2A_PUBLIC_URL", "ATF_A2A_TARGET_SCOPES", "ATF_SSRF_INTERNAL_HOSTS", "ATF_BUNDLE_ISSUER", "ATF_BUNDLE_PUBLIC_KEY_PEM", "ATF_BUNDLE_S3_BUCKET", "ATF_BUNDLE_S3_KEY"]
+        "agent-registry"    = ["ATF_REGISTRY_ISSUER", "ATF_REGISTRY_AUDIENCE", "ATF_REGISTRY_JWKS_URI", "ATF_REGISTRY_TABLE"]
+        "bundle-publisher"  = ["ATF_REGISTRY_TABLE", "ATF_BUNDLE_ISSUER", "ATF_BUNDLE_SIGNING_KEY", "ATF_BUNDLE_S3_BUCKET", "ATF_BUNDLE_S3_KEY", "ATF_GUARDRAILS_CEDAR"]
+        "knowledge-server"  = ["ATF_KB_ISSUER", "ATF_KB_AUDIENCE", "ATF_KB_JWKS_URI", "ATF_BUNDLE_ISSUER", "ATF_BUNDLE_PUBLIC_KEY_PEM", "ATF_BUNDLE_S3_BUCKET", "ATF_BUNDLE_S3_KEY"]
+        } : alltrue([
+          length(setsubtract(keys, keys(output.service_environment[svc]))) == 0,
+          output.service_environment[svc]["ATF_ENV"] == "dev",
+          output.service_environment[svc]["AWS_REGION"] == "us-east-1",
+      ])
+    ])
+    error_message = "A service is missing an environment variable its code requires."
+  }
+}
+
+run "no_local_only_or_secret_shaped_env" {
+  command = plan
+  assert {
+    condition = alltrue(flatten([
+      for svc, env in output.service_environment : [
+        for k, v in env : alltrue([
+          !endswith(k, "_PATH"),
+          !contains(["ATF_SSRF_ALLOW_CIDRS", "ATF_LOCAL_KEYS_DIR", "ATF_CA_BUNDLE", "ATF_MOCK_LLM_KEY"], k),
+          !startswith(k, "AWS_ENDPOINT_URL"),
+          !startswith(k, "AWS_ACCESS_KEY"),
+          !strcontains(k, "SECRET"),
+          v != "local",
+          !can(regex("PRIVATE KEY|AKIA[0-9A-Z]{16}|client_secret|(^|[^a-z])local:[a-z]", v)),
+        ])
+      ]
+    ]))
+    error_message = "Rendered env holds a local-only switch or secret-shaped material."
+  }
+}
+
+run "env_fits_with_headroom" {
+  # ECS caps a container definition near 64 KiB; keep each service's env under 48 KiB.
+  command = plan
+  assert {
+    condition = alltrue([
+      for svc, env in output.service_environment : sum([for k, v in env : length(k) + length(v) + 8]) < 49152
+    ])
+    error_message = "A service's rendered environment is too close to the container-definition limit."
+  }
+}
+
+run "bundle_key_pinned_not_granted" {
+  command = plan
+  assert {
+    condition = alltrue([
+      for svc in ["mcp-gateway", "inference-gateway", "a2a-gateway", "knowledge-server"] :
+      startswith(output.service_environment[svc]["ATF_BUNDLE_PUBLIC_KEY_PEM"], "-----BEGIN PUBLIC KEY-----")
+    ])
+    error_message = "Every verifier pins the bundle key's public half."
+  }
+  assert {
+    # Verifiers never call KMS for it: only signers (sign_grants) hold any KMS signing action.
+    condition = alltrue(flatten([
+      for svc, stmts in output.service_policies : [
+        for st in stmts : contains(["bundle-publisher", "mcp-gateway", "a2a-gateway"], svc)
+        if length(setintersection(toset(flatten([st.Action])), toset(["kms:Sign", "kms:GetPublicKey"]))) > 0
+      ]
+    ]))
+    error_message = "Only signers may hold kms:Sign or kms:GetPublicKey."
+  }
+}
+
+run "clients_sign_with_their_own_kms_key" {
+  command = plan
+  assert {
+    condition     = jsondecode(output.service_environment["mcp-gateway"]["ATF_EGRESS_PROFILE_JSON"]).client.signing_key == output.signing_keys["tool-gateway"]
+    error_message = "The MCP gateway signs client assertions with its own KMS key."
+  }
+  assert {
+    condition     = jsondecode(output.service_environment["a2a-gateway"]["ATF_A2A_EGRESS_PROFILE_JSON"]).client.signing_key == output.signing_keys["a2a-gateway"]
+    error_message = "The A2A gateway signs client assertions with its own KMS key."
+  }
+  assert {
+    condition     = output.service_environment["bundle-publisher"]["ATF_BUNDLE_SIGNING_KEY"] == output.signing_keys["bundle"]
+    error_message = "The publisher signs bundles with the bundle key."
+  }
+}
+
+run "tool_authorities_one_audience_per_as" {
+  command = plan
+  assert {
+    condition = jsondecode(output.service_environment["mcp-gateway"]["ATF_TOOL_AUTHORITIES_JSON"]) == {
+      "api://knowledge"    = { issuer = "https://example.okta.com/oauth2/aus-knowledge", token_endpoint = "https://example.okta.com/oauth2/aus-knowledge/v1/token", jwks_uri = "https://example.okta.com/oauth2/aus-knowledge/v1/keys" }
+      "api://tool-tickets" = { issuer = "https://example.okta.com/oauth2/aus-tickets", token_endpoint = "https://example.okta.com/oauth2/aus-tickets/v1/token", jwks_uri = "https://example.okta.com/oauth2/aus-tickets/v1/keys" }
+    }
+    error_message = "Tool authorities: the knowledge AS plus each tool AS, by Okta convention."
+  }
+}
+
+run "internal_egress_is_tools_plane_only" {
+  command = plan
+  assert {
+    condition = jsondecode(output.service_environment["mcp-gateway"]["ATF_SSRF_INTERNAL_HOSTS"]) == {
+      "knowledge.atf.example.com" = ["10.40.0.0/20", "10.40.16.0/20"]
+    }
+    error_message = "MCP egress may reach only the tools plane, confined to the private subnets."
+  }
+  assert {
+    condition     = output.service_environment["mcp-admin"]["ATF_SSRF_INTERNAL_HOSTS"] == output.service_environment["mcp-gateway"]["ATF_SSRF_INTERNAL_HOSTS"]
+    error_message = "Enrolment vetting and calls use the same internal hosts."
+  }
+}
+
+run "admin_host_as_a2a_target_refused" {
+  command = plan
+  variables {
+    a2a_internal_hosts = { "registry.atf.example.com" = ["10.40.0.0/20"] }
+  }
+  expect_failures = [check.no_admin_hosts_in_egress]
+}
+
+run "non_bedrock_route_refused" {
+  command = plan
+  variables {
+    model_routes = { mock = { provider_model = "openai/mock-sonnet" } }
+  }
+  expect_failures = [var.model_routes]
+}
+
+run "shared_audience_refused" {
+  command = plan
+  variables {
+    idp = {
+      base_url = "https://example.okta.com"
+      authorization_servers = {
+        workload  = { id = "aus-workload", audience = "api://tool-gateway" }
+        inference = { id = "aus-inference", audience = "api://inference-gateway" }
+        registry  = { id = "aus-registry", audience = "api://agent-registry" }
+        admin     = { id = "aus-admin", audience = "api://mcp-admin" }
+        ingress   = { id = "aus-ingress", audience = "api://agent-ingress" }
+        knowledge = { id = "aus-knowledge", audience = "api://knowledge" }
+      }
+      tool_authorization_servers = { tickets = { id = "aus-tickets", audience = "api://knowledge" } }
+      clients                    = { tool_gateway = "a", a2a_gateway = "b", frontend = "c" }
+    }
+  }
+  expect_failures = [var.idp]
+}
+
+run "guardrails_rendered_from_the_repo" {
+  command = plan
+  assert {
+    condition     = output.service_environment["bundle-publisher"]["ATF_GUARDRAILS_CEDAR"] == file("../../../policies/guardrails.cedar")
+    error_message = "The publisher's guardrails are the reviewed file, verbatim."
   }
 }

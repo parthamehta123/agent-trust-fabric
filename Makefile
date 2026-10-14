@@ -59,7 +59,7 @@ TOFU    := ghcr.io/opentofu/opentofu@sha256:22cb52f6c5bf5c72a48a8f56d993d8df3e94
 TFLINT  := atf-iac/tflint:0.64.0
 CHECKOV := atf-iac/checkov:3.3.20
 IAC_RUN := docker run --rm --user $(ATF_UID):$(ATF_GID) -e HOME=/tmp -e TF_PLUGIN_CACHE_DIR=/cache -e TFLINT_PLUGIN_DIR=/cache/tflint \
-	-v $(CURDIR)/infra:/w/infra -v $(CURDIR)/build/iac-cache:/cache
+	-v $(CURDIR)/infra:/w/infra -v $(CURDIR)/policies:/w/policies:ro -v $(CURDIR)/build/iac-cache:/cache
 
 iac-tools:  ## build the verified tflint/checkov images (signature + checksum checks, fail closed)
 	scripts/iac-tools.sh

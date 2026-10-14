@@ -17,10 +17,11 @@ from typing import Final
 
 from trustkit.audit import AuditEvent, AuditSink, Decision
 from trustkit.binding import AgentPolicy
-from trustkit.config import load_document
+from trustkit.config import ConfigSourceError, load_document
 from trustkit.exchange import KeyResolverFactory
 from trustkit.jwt import TokenValidator, ValidationPolicy, VerifiedToken
 from trustkit.profiles import ScannerFailureMode
+from trustkit.signing import es256_public_jwk
 from trustkit_policy.bundle import BundleHolder, BundleVerifier, LoadedBundle, RefreshOutcome
 from trustkit_policy.grants import CLASSIFICATIONS, AgentGrant, classification_rank
 from trustkit_policy.pdp import DecisionRequest, PolicyDecision, Resource
@@ -41,11 +42,12 @@ class BundleSettings:
 
     @staticmethod
     def from_env(env: Mapping[str, str]) -> BundleSettings:
-        """``ATF_BUNDLE_ISSUER``, ``ATF_BUNDLE_PUBLIC_JWK_PATH`` or ``_JSON`` (pinned key),
+        """``ATF_BUNDLE_ISSUER``, the pinned key (``ATF_BUNDLE_PUBLIC_JWK_PATH``, ``_JSON``, or
+        ``ATF_BUNDLE_PUBLIC_KEY_PEM``; exactly one),
         ``ATF_BUNDLE_MAX_AGE_S`` (default and ceiling 600), ``ATF_BUNDLE_REFRESH_S`` (default
         60, must be < max age). Anything invalid raises ``ValueError`` (cold-start failure)."""
         issuer = env["ATF_BUNDLE_ISSUER"]
-        jwk = parse_jwk(load_document(env, "ATF_BUNDLE_PUBLIC_JWK"))
+        jwk = _pinned_key(env)
         max_age = int(env.get("ATF_BUNDLE_MAX_AGE_S", str(MAX_AGE_CEILING_S)))
         refresh = int(env.get("ATF_BUNDLE_REFRESH_S", str(DEFAULT_REFRESH_S)))
         if not 0 < max_age <= MAX_AGE_CEILING_S:
@@ -167,6 +169,28 @@ def effective_fail_mode(
     if profile_mode is ScannerFailureMode.OPEN and grant_mode is ScannerFailureMode.OPEN:
         return ScannerFailureMode.OPEN
     return ScannerFailureMode.CLOSED
+
+
+def _pinned_key(env: Mapping[str, str]) -> Mapping[str, str]:
+    """AWS pins the KMS key's PEM at deploy (``aws_kms_public_key``, ADR-0026 §14): Terraform
+    can't build a JWK from DER. The JWK derived here has the same RFC 7638 thumbprint, so the
+    pin is identical either way."""
+    pem = env.get("ATF_BUNDLE_PUBLIC_KEY_PEM")
+    if pem is None:
+        return parse_jwk(load_document(env, "ATF_BUNDLE_PUBLIC_JWK"))
+    if "ATF_BUNDLE_PUBLIC_JWK_JSON" in env or "ATF_BUNDLE_PUBLIC_JWK_PATH" in env:
+        raise ConfigSourceError("set one bundle verification key, not both")
+    from cryptography.hazmat.primitives.asymmetric import ec
+    from cryptography.hazmat.primitives.serialization import load_pem_public_key
+
+    try:
+        key = load_pem_public_key(pem.encode())
+    except ValueError:
+        raise ValueError("bundle verification key must be a public PEM") from None
+    if not isinstance(key, ec.EllipticCurvePublicKey) or not isinstance(key.curve, ec.SECP256R1):
+        # A config error, not a programming one: ValueError is the cold-start contract.
+        raise ValueError("bundle verification key must be a public EC P-256 key")  # noqa: TRY004
+    return es256_public_jwk(key)
 
 
 def read_jwk(path: pathlib.Path) -> Mapping[str, str]:

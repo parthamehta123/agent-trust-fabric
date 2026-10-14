@@ -170,7 +170,7 @@ def build_app(env: Mapping[str, str]) -> FastAPI:
     from trustkit_aws.s3_bundles import s3_source_factory
     from trustkit_aws.signers import make_signer_factory
     from trustkit_http.endpoint import HttpxTokenEndpoint
-    from trustkit_http.ssrf import PinnedClient, parse_local_allowlist
+    from trustkit_http.ssrf import PinnedClient, parse_internal_hosts, parse_local_allowlist
     from trustkit_policy.runtime import actor_policies_from_bundle, policy_from_env
 
     egress = json.loads(load_document(env, "ATF_A2A_EGRESS_PROFILE"))
@@ -178,6 +178,7 @@ def build_app(env: Mapping[str, str]) -> FastAPI:
     target_scopes = frozenset(env["ATF_A2A_TARGET_SCOPES"].split())
     ca, region = ca_bundle(env), env.get("AWS_REGION", "us-east-1")
     allow = parse_local_allowlist(env)
+    internal = parse_internal_hosts(env)  # agent runtimes by exact name (ADR-0026 §19)
     http = HttpxTokenEndpoint(ca_bundle_path=ca)
     resolvers: dict[str, KeyResolver] = {}
 
@@ -199,7 +200,7 @@ def build_app(env: Mapping[str, str]) -> FastAPI:
         exchanger=IdJagExchanger(
             http=http, signers=make_signer_factory(env), jwks=jwks, breakers=BreakerRegistry()
         ),
-        upstream=PinnedClient(ca_bundle_path=ca, allow=allow),
+        upstream=PinnedClient(ca_bundle_path=ca, allow=allow, internal_hosts=internal),
         scanner=LocalRulesScanner(),
         audit=audit,
         config=BrokerConfig(

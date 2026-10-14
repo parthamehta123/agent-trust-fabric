@@ -113,7 +113,13 @@
 
 14. **The bundle verification key is pinned at deploy.**
     - Terraform reads the bundle key's public half (`aws_kms_public_key`) and passes it as
-      `ATF_BUNDLE_PUBLIC_JWK_JSON`.
+      `ATF_BUNDLE_PUBLIC_KEY_PEM`. Terraform can't turn DER into a JWK, so the verifier derives
+      the JWK itself. It must be P-256, and the derived JWK (and so the `kid` thumbprint) is
+      identical to the JWK pin used locally. Exactly one key source may be set.
+    - The data source reads through the **alias** this configuration manages
+      (`alias/<name>-sign-bundle`). Provider 6.66.0 rejects every key id and key ARN for
+      `aws_kms_public_key`, even AWS's documented examples; aliases validate. Repointing the
+      alias, or any change to the pinned PEM, shows in the plan as drift.
     - Verifiers have **no** KMS permission on the bundle key. Rotating it is an explicit
       redeploy (ADR-0022).
 
@@ -157,3 +163,37 @@
       export through the `Retrieve` adapter.
     - Follow-up: re-ingest doesn't yet delete objects for withdrawn documents. Until it does, a
       withdrawal is a manual delete by the ingest role followed by a data-source sync.
+
+19. **Named internal hosts for egress (amends ADR-0017 §4, ADR-0018 §1).**
+    - **Gap found in 6c-ii:** in AWS the knowledge server (behind the tools ALB) and agent
+      runtimes have private addresses, and the SSRF guard refuses every non-public address
+      outside `local`. Compose never showed this, because local mode allows its test subnets.
+    - `ATF_SSRF_INTERNAL_HOSTS` is a JSON map of **exact lowercase FQDN → private CIDRs**,
+      allowed in any environment, with at most 64 entries:
+      - each CIDR is RFC 1918 at /16 or narrower, or ULA at /48 or narrower, so loopback,
+        link-local (metadata), CGNAT and public space never qualify;
+      - a named host is accepted only if **every** resolved address is inside its CIDRs. A
+        public answer for it is refused too, so a poisoned record can't divert it;
+      - other names are judged exactly as before, with no suffix or wildcard matching.
+    - Pinning, SNI and certificate hostname checks are unchanged. The MCP gateway (calls and
+      enrolment vetting) and the A2A gateway both honour it.
+    - Terraform renders it from the tools-plane records and the private subnet CIDRs. A test
+      asserts that admin-plane hosts are never listed.
+    - `ATF_SSRF_ALLOW_CIDRS` remains local-only.
+
+20. **IdP variables.**
+    - One structured `idp` object: `base_url`, a map from logical authorization server to its
+      id (workload, tool, knowledge, inference, registry, admin, ingress, agent), and a map of
+      client ids.
+    - Issuer, JWKS and token URLs are derived by Okta convention (`{base}/oauth2/{id}`,
+      `/v1/keys`, `/v1/token`), as devstack does locally.
+
+21. **Verification notes (6c-ii).**
+    - The IaC containers mount `policies/` read-only, so the publisher's
+      `ATF_GUARDRAILS_CEDAR` is the reviewed file verbatim (asserted).
+    - checkov's parser (python-hcl2) can't parse a leading `&&` continuation line. Test
+      conditions are written as `alltrue([...])` lists, and parse errors must stay at 0.
+    - The MCP admin service doesn't read an egress profile (only the data plane does), so it
+      isn't given one.
+    - The CI IaC job still points at a placeholder path and doesn't run. Rewiring it to
+      `make iac-validate` is 6d.

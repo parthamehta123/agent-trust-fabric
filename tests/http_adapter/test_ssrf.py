@@ -8,7 +8,15 @@ import json
 import httpx
 import pytest
 
-from trustkit_http.ssrf import PinnedClient, SsrfError, is_forbidden_ip, vet_url
+from trustkit_http.ssrf import (
+    InternalHosts,
+    PinnedClient,
+    SsrfConfigError,
+    SsrfError,
+    is_forbidden_ip,
+    parse_internal_hosts,
+    vet_url,
+)
 
 PUBLIC = "93.184.216.34"
 
@@ -167,3 +175,119 @@ class TestPinnedClient:
             ]
             is None
         )
+
+
+# ----------------------------------------------------------------------------- internal hosts
+
+
+KB = "knowledge.atf.example.com"
+SUBNETS = ["10.40.0.0/20", "10.40.16.0/20"]
+
+
+def internal(doc: object) -> dict[str, str]:
+    return {"ATF_ENV": "dev", "ATF_SSRF_INTERNAL_HOSTS": json.dumps(doc)}
+
+
+@pytest.mark.security
+class TestInternalHosts:
+    """Named internal hosts (ADR-0026 §19): private targets by exact name, confined addresses."""
+
+    def hosts(self) -> InternalHosts:
+        return parse_internal_hosts(internal({KB: SUBNETS}))
+
+    def test_parse_allowed_outside_local(self) -> None:
+        h = self.hosts()
+        assert set(h) == {KB}
+        assert h[KB] == frozenset(ipaddress.ip_network(c) for c in SUBNETS)
+
+    def test_unset_or_empty(self) -> None:
+        assert parse_internal_hosts({}) == {}
+        assert parse_internal_hosts({"ATF_SSRF_INTERNAL_HOSTS": "  "}) == {}
+
+    def test_named_host_reaches_its_subnet(self) -> None:
+        t = vet_url(
+            f"https://{KB}/mcp", resolver=resolver("10.40.3.9"), internal_hosts=self.hosts()
+        )
+        assert (t.hostname, t.ip) == (KB, "10.40.3.9")
+
+    def test_trailing_dot_is_the_same_host(self) -> None:
+        vet_url(f"https://{KB}./mcp", resolver=resolver("10.40.3.9"), internal_hosts=self.hosts())
+
+    @pytest.mark.parametrize(
+        "ips",
+        [
+            ["10.41.0.1"],  # another private range
+            ["10.40.3.9", "10.99.0.1"],  # one answer outside poisons the set
+            ["10.40.3.9", PUBLIC],  # even a public answer: the host is confined
+            ["169.254.169.254"],
+            ["127.0.0.1"],
+            ["::ffff:10.40.3.9"],  # mapped forms never match an IPv4 network
+        ],
+    )
+    def test_named_host_confined(self, ips: list[str]) -> None:
+        with pytest.raises(SsrfError, match="outside its allowed networks"):
+            vet_url(f"https://{KB}/mcp", resolver=resolver(*ips), internal_hosts=self.hosts())
+
+    @pytest.mark.parametrize(
+        "host",
+        [
+            "registry.atf.example.com",  # a sibling name: no suffix matching
+            "x.knowledge.atf.example.com",  # a subdomain: no wildcard
+            "knowledge.atf.example.com.evil.test",
+        ],
+    )
+    def test_other_names_stay_public_only(self, host: str) -> None:
+        with pytest.raises(SsrfError, match="non-public"):
+            vet_url(
+                f"https://{host}/mcp", resolver=resolver("10.40.3.9"), internal_hosts=self.hosts()
+            )
+
+    def test_public_hosts_unaffected(self) -> None:
+        vet_url(
+            "https://tools.example.com/mcp", resolver=resolver(PUBLIC), internal_hosts=self.hosts()
+        )
+
+    @pytest.mark.parametrize(
+        "doc",
+        [
+            [KB],
+            {KB: []},
+            {KB: "10.40.0.0/20"},
+            {KB: [17]},
+            {"Knowledge.atf.example.com": SUBNETS},  # must be lowercase
+            {"knowledge": SUBNETS},  # single label
+            {"*.atf.example.com": SUBNETS},  # no wildcards
+            {"10.40.0.5": SUBNETS},  # all-numeric labels are not a host name
+            {KB: ["169.254.0.0/16"]},  # link-local / metadata
+            {KB: ["127.0.0.0/8"]},
+            {KB: ["100.64.0.0/16"]},  # CGNAT
+            {KB: ["10.0.0.0/8"]},  # too wide
+            {KB: ["0.0.0.0/0"]},
+            {KB: ["10.40.0.1/20"]},  # host bits set
+            {f"h{i}.example.com": SUBNETS for i in range(65)},  # too many
+        ],
+    )
+    def test_bad_config_refused(self, doc: object) -> None:
+        with pytest.raises(SsrfConfigError):
+            parse_internal_hosts(internal(doc))
+
+    def test_not_json_refused(self) -> None:
+        with pytest.raises(SsrfConfigError):
+            parse_internal_hosts({"ATF_SSRF_INTERNAL_HOSTS": "knowledge=10.40.0.0/20"})
+
+    def test_pinned_client_honours_internal_hosts(self) -> None:
+        seen: list[str] = []
+
+        def handler(req: httpx.Request) -> httpx.Response:
+            seen.append(str(req.url.host))
+            return httpx.Response(200, json={"ok": True})
+
+        c = PinnedClient(
+            resolver=resolver("10.40.3.9"),
+            transport=httpx.MockTransport(handler),
+            internal_hosts=self.hosts(),
+        )
+        assert c.post_json(f"https://{KB}/mcp", {}, headers={}) == (200, {"ok": True})
+        assert seen == ["10.40.3.9"]
+        with pytest.raises(SsrfError):
+            c.post_json("https://registry.atf.example.com/x", {}, headers={})
