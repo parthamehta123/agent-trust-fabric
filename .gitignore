@@ -58,3 +58,7 @@ infra/modules/**/.terraform.lock.hcl
 *.tfvars
 !*.tfvars.example
 infra/**/backend.hcl
+
+# OpenTofu plan files can contain sensitive values (runbook writes them locally).
+*.plan
+*.tfplan

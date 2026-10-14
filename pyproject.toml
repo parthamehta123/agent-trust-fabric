@@ -97,6 +97,7 @@ addopts = "-ra --strict-markers --strict-config"
 markers = [
     "security: negative-path tests that map to a threat-model mitigation ID (TM-*)",
     "compose: end-to-end tests against the running docker compose stack (make up e2e)",
+    "aws: opt-in probes (tests/aws_probes) against a sandbox apply (ATF_AWS_PROBES=1, AWS_PROFILE, ATF_AWS_OUTPUTS)",
 ]
 xfail_strict = true
 

@@ -269,5 +269,5 @@
 28. **Runbook plus opt-in AWS probes.**
     - `docs/runbooks/sandbox.md` covers bootstrap, plan review, apply, image push by digest, IdP
       setup, ingest and sync, smoke test, and a scripted destroy with a budget check.
-    - `tests/aws/` holds pytest probes for A-1b..A-11 and the ED-x rows. They are marked `aws`
+    - `tests/aws_probes/` holds pytest probes for A-1b..A-11 and the ED-x rows. They are marked `aws`
       and skipped unless `ATF_AWS_PROBES=1` and a named profile are set.

@@ -1,0 +1,6 @@
+region                 = "us-east-1"
+allowed_account_ids    = ["000000000000"] # the sandbox account only
+github_repository      = "parthamehta123/agent-trust-fabric"
+state_bucket_name      = "atf-tfstate-REPLACE"
+cloudtrail_bucket_name = "atf-dev-trail-REPLACE" # must equal envs/dev cloudtrail_bucket_name
+allowed_regions        = ["us-east-1"]

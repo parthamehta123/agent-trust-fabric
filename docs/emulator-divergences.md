@@ -4,6 +4,10 @@ Every place where a local emulator (moto, LocalStack, the mock IdP) behaves diff
 real service. Each entry states how the codebase stays correct against the **real** behaviour,
 and each must be re-verified against the real service before Phase 6 (ADR-0005, RR-3).
 
+How each row gets verified on a sandbox apply, automated (`tests/aws_probes`, opt-in) or
+manual, is listed in [the sandbox runbook, step 8](runbooks/sandbox.md#8-verify-admin-read-only-probes).
+Tick a row only with a date and the evidence (probe run or captured output).
+
 | ID | Emulator | Behaviour in emulator | Real behaviour | How we stay correct | Verified against real |
 |---|---|---|---|---|---|
 | ED-1 | moto 5.x KMS | `Sign` with `MessageType=DIGEST` hashes the digest again (double hash) | Signs the supplied digest as-is | Use `MessageType=RAW` (ADR-0010); self-verify every signature | ☐ |

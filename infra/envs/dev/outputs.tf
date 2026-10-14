@@ -85,3 +85,8 @@ output "audit" {
   }
   description = "What the trail records (asserted in tests)."
 }
+
+output "gateway_id" {
+  value       = module.gateway.gateway_id
+  description = "Ingress gateway id (AWS probes)."
+}
