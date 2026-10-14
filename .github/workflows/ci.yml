@@ -85,18 +85,14 @@ jobs:
       - if: always()
         run: make down
 
-  terraform:
-    # Enabled once infra/terraform exists (Phase 6).
-    if: ${{ hashFiles('infra/terraform/**/*.tf') != '' }}
+  iac:
+    # ADR-0026 §25: the same digest-pinned, signature-verified tools as on a laptop (OpenTofu,
+    # our rebuilt tflint, sandboxed checkov, RR-8). No cloud credentials in this job.
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with: { persist-credentials: false }
-      - uses: hashicorp/setup-terraform@b9cd54a3c349d3f38e8881555d616ced269862dd # v3
-      - run: terraform -chdir=infra/terraform fmt -check -recursive
-      - uses: terraform-linters/setup-tflint@90f302c255ef959cbfb4bd10581afecdb7ece3e6 # v4
-      - run: tflint --chdir=infra/terraform --recursive
-      - uses: bridgecrewio/checkov-action@d0dd2e9434b4428060edba72d050c135273bd677 # v12
-        with:
-          directory: infra/terraform
-          framework: terraform
+      - run: make iac-tools
+      - run: make iac-validate

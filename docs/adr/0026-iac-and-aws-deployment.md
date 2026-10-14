@@ -238,3 +238,36 @@
       `Authorization`;
     - Bedrock KB `chunking_strategy = NONE` with `.metadata.json` sidecars on S3 Vectors;
     - the `aws_kms_public_key` key-id validation behaviour (worked around with the alias, §14).
+
+## 6d decisions (2026-10-14)
+
+25. **CI validates the IaC with the same pinned containers as local.**
+    - The stale `terraform` job (wrong path, marketplace binaries, unsandboxed checkov) is
+      replaced by `make iac-tools && make iac-validate`.
+    - The job has `permissions: contents: read` and no cloud credentials, so tool signatures
+      fail closed in CI exactly as on a laptop, and RR-8's sandbox holds.
+
+26. **GitHub OIDC: a read-only plan role and a gated apply role.**
+    - The **plan** role is read-only plus state read. It is trusted only for `pull_request` and
+      `refs/heads/main` of this repository; fork PRs never receive tokens.
+    - The **apply** role is trusted only for `environment:sandbox`: a GitHub environment with a
+      required reviewer, run through manual `workflow_dispatch`.
+    - A third role, also on `environment:sandbox`, may assume `kb-ingest`.
+    - Every trust pins `aud = sts.amazonaws.com` and an exact `sub`. Sessions last at most one
+      hour.
+    - `infra/bootstrap` (state bucket with native lockfile and KMS, OIDC provider, the roles) is
+      applied once, by hand, by an administrator.
+
+27. **CloudTrail: an account trail plus targeted data events.**
+    - The trail is multi-region, with log-file validation and KMS encryption.
+    - Its log bucket has object lock, and no workload role can write or delete it.
+    - Advanced selectors capture:
+      - S3 writes on the bundle and corpus buckets;
+      - `Invoke` on the interceptor Lambda (TM-INT-03);
+      - DynamoDB writes on the `agents` and `mcp-servers` tables.
+
+28. **Runbook plus opt-in AWS probes.**
+    - `docs/runbooks/sandbox.md` covers bootstrap, plan review, apply, image push by digest, IdP
+      setup, ingest and sync, smoke test, and a scripted destroy with a budget check.
+    - `tests/aws/` holds pytest probes for A-1b..A-11 and the ED-x rows. They are marked `aws`
+      and skipped unless `ATF_AWS_PROBES=1` and a named profile are set.
