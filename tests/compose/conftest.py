@@ -29,8 +29,13 @@ KB_SCOPES = ["kb.eng.read", "kb.hr.read", "kb.public.read"]
 IDP_CONFIGURED = "https://mock-idp:8443"
 
 
+TIMEOUT_SCALE = float(os.environ.get("ATF_E2E_TIMEOUT_SCALE", "1"))
+"""CI runners are slower at stack churn; this stretches how long tests *wait*, never what the
+system is allowed to do (bundle ages and refresh periods are fixed by the stack)."""
+
+
 def wait_until(check: Callable[[], bool], timeout: float = 30.0, what: str = "") -> None:
-    deadline = time.monotonic() + timeout
+    deadline = time.monotonic() + timeout * TIMEOUT_SCALE
     while time.monotonic() < deadline:
         if check():
             return

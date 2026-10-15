@@ -81,7 +81,19 @@ jobs:
       - run: uv sync --locked
       - run: make up
       - run: make e2e
+        env:
+          # Hosted runners are ~4x slower than a laptop at stack churn (stop/start, refresh);
+          # scale the tests' *waits* only. Bundle ages and refresh periods are unchanged.
+          ATF_E2E_TIMEOUT_SCALE: "3"
       - run: make logs-scan
+      - name: Diagnose a failure (only after the token/key scan passes)
+        if: failure()
+        run: |
+          make logs-scan
+          docker compose ps -a
+          for s in bundle-publisher agent-registry inference-gateway mcp-gateway; do
+            echo "::group::$s"; docker compose logs --no-color --tail 150 "$s"; echo "::endgroup::"
+          done
       - if: always()
         run: make down
 
