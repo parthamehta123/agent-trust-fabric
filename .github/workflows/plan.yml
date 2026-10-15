@@ -28,7 +28,6 @@ jobs:
       AWS_REGION: ${{ vars.ATF_AWS_REGION }}
       AWS_ROLE_ARN: ${{ vars.ATF_PLAN_ROLE_ARN }}
       AWS_ROLE_SESSION_NAME: gha-plan-${{ github.run_id }}
-      AWS_WEB_IDENTITY_TOKEN_FILE: ${{ runner.temp }}/oidc-token
       ATF_ALLOW_AWS: "1"
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -43,6 +42,8 @@ jobs:
       - name: OIDC token for STS (no third-party action, no stored keys)
         run: |
           umask 077
+          echo "AWS_WEB_IDENTITY_TOKEN_FILE=$RUNNER_TEMP/oidc-token" >> "$GITHUB_ENV"
+          export AWS_WEB_IDENTITY_TOKEN_FILE="$RUNNER_TEMP/oidc-token"
           curl -sSf -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
             "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=sts.amazonaws.com" | jq -r .value > "$AWS_WEB_IDENTITY_TOKEN_FILE"
       - run: make iac-plan

@@ -65,6 +65,34 @@ class TestHygiene:
             assert "${{" not in str(s.get("run", "")), s.get("run")
 
 
+# Contexts GitHub allows at job level (docs: "Contexts > Context availability"). `runner`, `steps`
+# and `job` exist only inside steps; using them here makes the whole workflow file invalid.
+JOB_LEVEL_CONTEXTS = {
+    "env": {"github", "needs", "strategy", "matrix", "vars", "secrets", "inputs"},
+    "if": {"github", "needs", "vars", "inputs"},
+}
+EXPR = re.compile(r"\$\{\{(.*?)\}\}")
+CONTEXT = re.compile(r"(?<![\w.'])([a-z_]+)\.")
+
+
+def contexts_in(value: object) -> set[str]:
+    text = str(value)
+    exprs = EXPR.findall(text) or ([text] if not isinstance(value, dict) else [])
+    return {c for e in exprs for c in CONTEXT.findall(e)}
+
+
+@pytest.mark.parametrize("path", WORKFLOWS, ids=lambda p: p.name)
+def test_job_level_expressions_use_available_contexts(path: pathlib.Path) -> None:
+    """Regression: `${{ runner.temp }}` in a job's `env:` broke plan.yml and apply.yml on GitHub."""
+    for job_name, job in load(path)["jobs"].items():
+        for key, allowed in JOB_LEVEL_CONTEXTS.items():
+            if key in job:
+                values = job[key].values() if isinstance(job[key], dict) else [job[key]]
+                for v in values:
+                    bad = contexts_in(v) - allowed
+                    assert not bad, f"{path.name}:{job_name}.{key} uses {sorted(bad)}"
+
+
 @pytest.mark.security
 def test_apply_is_manual_gated_and_main_only() -> None:
     doc = load(next(p for p in WORKFLOWS if p.name == "apply.yml"))
