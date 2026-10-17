@@ -110,3 +110,18 @@ def test_plan_never_applies() -> None:
     runs = " ".join(str(s.get("run", "")) for _, s in steps(doc))
     assert "iac-plan" in runs
     assert "apply" not in runs
+
+
+@pytest.mark.security
+def test_dependabot_respects_the_minimum_age_and_python_pin() -> None:
+    """ADR-0026 §2: nothing younger than 14 days; Python base images never jump a minor version."""
+    doc = yaml.safe_load((WORKFLOWS[0].parents[1] / "dependabot.yml").read_text())
+    for u in doc["updates"]:
+        assert u["cooldown"]["default-days"] >= 14, u["package-ecosystem"]
+        if u["package-ecosystem"] == "docker":
+            ignored = {
+                i["dependency-name"]
+                for i in u.get("ignore", [])
+                if "version-update:semver-minor" in i["update-types"]
+            }
+            assert "python" in ignored, u["directory"]
