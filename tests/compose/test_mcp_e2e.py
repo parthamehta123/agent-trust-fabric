@@ -136,7 +136,7 @@ def agent_call(http: httpx.Client, body: dict[str, Any], user: str = "00u-alice"
 def server_id(http: httpx.Client) -> str:
     """Fresh mock-mcp state, then enrol + refresh (alice) + approve (bob)."""
     _compose("restart", "mock-mcp")
-    _compose("up", "-d", "--wait", "mock-mcp")
+    _compose("up", "-d", "--no-deps", "--no-recreate", "--wait", "mock-mcp")
     sid = MCP_SERVER_ID  # the id agent-alpha's registry grant names (conftest)
     alice = {"Authorization": f"Bearer {admin_token(http, 'alice')}"}
     bob = {"Authorization": f"Bearer {admin_token(http, 'bob')}"}

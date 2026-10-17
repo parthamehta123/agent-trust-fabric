@@ -81,10 +81,6 @@ jobs:
       - run: uv sync --locked
       - run: make up
       - run: make e2e
-        env:
-          # Hosted runners are ~4x slower than a laptop at stack churn (stop/start, refresh);
-          # scale the tests' *waits* only. Bundle ages and refresh periods are unchanged.
-          ATF_E2E_TIMEOUT_SCALE: "3"
       - run: make logs-scan
       - name: Diagnose a failure (only after the token/key scan passes)
         if: failure()

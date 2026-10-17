@@ -58,8 +58,11 @@ def both(http: httpx.Client) -> tuple[int, int]:  # noqa: F811
 
 
 def restart_publisher() -> None:
+    # --no-deps --no-recreate: some Compose versions (GitHub runners) otherwise recreate the
+    # publisher's dependencies, and a recreated mock IdP mints with new keys that every gateway's
+    # cached JWKS rejects (seen as 401s that no wait could fix).
     _compose("start", "bundle-publisher")
-    _compose("up", "-d", "--wait", "bundle-publisher")
+    _compose("up", "-d", "--no-deps", "--no-recreate", "--wait", "bundle-publisher")
 
 
 def restore(http: httpx.Client) -> None:  # noqa: F811
