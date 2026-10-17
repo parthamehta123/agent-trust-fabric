@@ -244,26 +244,14 @@ class TestCounter:
             assert DynamoRegistryStore(c, "agents").next_bundle_version() == 3  # restart
             assert s1.agent_ids() == []  # reserved item never looks like an agent
 
-    def test_concurrent_counter_unique(self) -> None:
+    def test_dynamo_counter_is_sequential_and_gapless(self) -> None:
+        """Single-threaded on moto. Atomicity under concurrency is proven on DynamoDB Local
+        (tests/compose/test_ddb_atomicity.py): moto's UpdateItem isn't thread-safe (ED-14)."""
         with mock_aws():
             c = boto3.client("dynamodb", region_name="us-east-1")
             ensure_local_table(c, "agents")
             s = DynamoRegistryStore(c, "agents")
-            got: list[int] = []
-            lock = threading.Lock()
-
-            def take() -> None:
-                for _ in range(10):
-                    v = s.next_bundle_version()
-                    with lock:
-                        got.append(v)
-
-            threads = [threading.Thread(target=take) for _ in range(5)]
-            for t in threads:
-                t.start()
-            for t in threads:
-                t.join()
-            assert sorted(got) == list(range(1, 51))
+            assert [s.next_bundle_version() for _ in range(50)] == list(range(1, 51))
 
 
 @pytest.mark.security

@@ -46,7 +46,7 @@ CHAIN_REPLY = f"ticket T-7 for 00u-alice via {BETA} on behalf of {AGENT}"
 def a2a_tool_server(http: httpx.Client) -> str:  # noqa: F811
     """A fresh tool server granted to both agents (enrol: alice, approve: bob)."""
     _compose("restart", "mock-mcp")
-    _compose("up", "-d", "--wait", "mock-mcp")
+    _compose("up", "-d", "--no-deps", "--no-recreate", "--wait", "mock-mcp")
     alice = {"Authorization": f"Bearer {admin_token(http, 'alice')}"}
     bob = {"Authorization": f"Bearer {admin_token(http, 'bob')}"}
     enrol = {
