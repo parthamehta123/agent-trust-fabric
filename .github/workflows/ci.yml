@@ -90,6 +90,8 @@ jobs:
         if: failure()
         run: |
           make logs-scan
+          # compose.yaml takes the container user from the Makefile's exports (run via make).
+          export ATF_UID="$(id -u)" ATF_GID="$(id -g)"
           docker compose ps -a
           for s in bundle-publisher agent-registry inference-gateway mcp-gateway; do
             echo "::group::$s"; docker compose logs --no-color --tail 150 "$s"; echo "::endgroup::"
