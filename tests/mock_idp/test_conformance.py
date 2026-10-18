@@ -498,3 +498,13 @@ class TestOracleRejectPaths:
     ) -> None:
         idt = idp._sign(idp._org_key, "JWT", {**claims, "iat": T0, "exp": T0 + 600})
         assert_error(do_exchange(idp, keys, id_token=idt), "invalid_grant")
+
+
+@pytest.mark.security
+def test_kids_are_rfc7638_thumbprints(idp: MockIdp) -> None:
+    """ADR-0027: new key material always means a new kid, as with a real IdP."""
+    from joserfc.jwk import RSAKey
+
+    for as_id in (None, *idp._servers):
+        for jwk in idp.jwks(as_id)["keys"]:
+            assert jwk["kid"] == RSAKey.import_key(jwk).thumbprint()

@@ -134,7 +134,28 @@ Then work through the checklist below, ticking each row in `docs/emulator-diverg
 | Audit: trail logging with the agreed selectors, logs undeletable | automated | `test_pins_and_audit.py` |
 | Corpus writable only by kb-ingest | automated (an admin write is denied) | `test_pins_and_audit.py` |
 
-## 9. Destroy (admin, local)
+## 9. IdP signing-key compromise (IdP admin + admin, ADR-0027)
+
+Without action, validators stop trusting a key the IdP has removed within **5 minutes**
+(`max_key_age_s`). For a real compromise, close that window now:
+
+1. In the IdP, **revoke** the compromised key and activate a new one with a **new `kid`**. Okta
+   custom authorization servers rotate this way. Never reuse a `kid`.
+2. Force every validator to drop its cached key set. New processes start with an empty cache:
+   ```bash
+   for svc in mcp-gateway mcp-admin inference-gateway a2a-gateway agent-registry knowledge-server; do
+     aws ecs update-service --cluster atf-dev --service "atf-dev-$svc" --force-new-deployment
+   done
+   aws lambda update-function-configuration --function-name atf-dev-interceptor \
+     --description "key-rotation $(date -u +%FT%TZ)"     # new execution environments
+   ```
+   Then restart the agent runtimes behind the gateway (AgentCore Runtime: publish a new version).
+3. Record the incident time, the revoked `kid` and the restart completion in the audit trail.
+   CloudTrail has the `UpdateService` and `UpdateFunctionConfiguration` calls.
+4. Check that a token signed with the old key is now refused (401) at every gateway, and that
+   tokens from the new key are accepted.
+
+## 10. Destroy (admin, local)
 
 ```bash
 cd infra/envs/dev
