@@ -539,14 +539,18 @@ class TestDelegationEdges:
         assert env.svc.approve(BOB, AGENT, n, ApprovalRole.APPROVER).state is State.APPROVED
 
 
+OK_ENDPOINT = "https://agent-beta.agents.internal:8443/a2a"
+
+
 class TestCardSpec:
     @pytest.mark.security
     @pytest.mark.parametrize(
         "card",
         [
             {"endpoint": "http://agent.internal/a2a"},
-            {"endpoint": "https://a/b", "skills": [{"id": "Bad Id", "name": "x"}]},
-            {"endpoint": "https://a/b", "extra": 1},
+            # A valid endpoint, so each case fails for its own reason (not the endpoint).
+            {"endpoint": OK_ENDPOINT, "skills": [{"id": "Bad Id", "name": "x"}]},
+            {"endpoint": OK_ENDPOINT, "extra": 1},
         ],
     )
     def test_invalid_card_rejected(self, card: dict[str, Any]) -> None:
@@ -554,3 +558,26 @@ class TestCardSpec:
 
         with pytest.raises(ValidationError):
             spec(card=card)
+
+    def test_fqdn_endpoint_accepted(self) -> None:
+        assert spec(card={"endpoint": OK_ENDPOINT}).card is not None
+
+    @pytest.mark.security
+    @pytest.mark.parametrize(
+        "endpoint",
+        [
+            "https://agent-beta:8443/a2a",  # single label: the A2A gateway would refuse it later
+            "https://10.40.3.9/a2a",  # IP literal
+            "https://user@agent.agents.internal/a2a",  # userinfo
+            "https://agent.agents.internal/a2a#x",  # fragment
+            "https://agent.agents.internal:0/a2a",  # invalid port
+            "https://agent.10/a2a",  # numeric TLD (an IP in disguise)
+        ],
+    )
+    def test_unroutable_endpoint_refused_at_submission(self, endpoint: str) -> None:
+        """ADR-0024 follow-up: the registry refuses what the A2A gateway's SSRF vetting would
+        refuse at call time, with the same implementation (trustkit_http.ssrf.check_url_shape)."""
+        from pydantic import ValidationError
+
+        with pytest.raises(ValidationError, match="card endpoint"):
+            spec(card={"endpoint": endpoint})

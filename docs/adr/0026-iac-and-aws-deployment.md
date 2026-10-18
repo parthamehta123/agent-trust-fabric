@@ -168,8 +168,10 @@
       provenance therefore reach `Retrieve` exactly as the local store has them, and the
       per-chunk scan and labelling of ADR-0025 §5 still hold. A contract test round-trips the
       export through the `Retrieve` adapter.
-    - Follow-up: re-ingest doesn't yet delete objects for withdrawn documents. Until it does, a
-      withdrawal is a manual delete by the ingest role followed by a data-source sync.
+    - Withdrawal: `ingest --out-s3` syncs. After every upload succeeds, it deletes objects in its
+      layout that the export no longer produces, and the next data-source sync drops their
+      vectors (`data_deletion_policy = DELETE`). An empty export is refused rather than wiping
+      the corpus, and nothing outside the layout is ever deleted (done 2026-10-19).
 
 19. **Named internal hosts for egress (amends ADR-0017 §4, ADR-0018 §1).**
     - **Gap found in 6c-ii:** in AWS the knowledge server (behind the tools ALB) and agent
@@ -271,3 +273,21 @@
       setup, ingest and sync, smoke test, and a scripted destroy with a budget check.
     - `tests/aws_probes/` holds pytest probes for A-1b..A-11 and the ED-x rows. They are marked `aws`
       and skipped unless `ATF_AWS_PROBES=1` and a named profile are set.
+
+## Hardening (2026-10-19)
+
+29. **One `uv`, and a base-image policy.**
+    - **`uv` is pinned.** `[tool.uv] required-version = ">=0.12.23,<0.13"`, and every setup-uv
+      step pins 0.12.23 (asserted in tests). Before this, CI installed whatever `uv` was latest,
+      the one unpinned tool in the pipeline, and laptops drifted months behind.
+    - **Base images** (Dockerfile `FROM`s and compose `image:` refs, all digest-pinned) must be
+      either **signature-verified** with cosign against a known identity (distroless today) or
+      **at least 14 days old** on every platform we use. Unsigned and undatable (no build time,
+      or the 1970 epoch of reproducible builds) always fails. `scripts/image_policy.py`,
+      `make image-policy`, CI job `image-policy`.
+    - **Why:** Dependabot's cooldown covers new versions, not same-tag digest refreshes (#13).
+      The first run also found that two pins on `main` had been adopted younger than 14 days
+      (the Lambda base image a day after its build). The rule had only ever covered tool
+      versions.
+    - **Rollout:** report-only (warnings) until **2026-10-25**, when every current pin complies.
+      Then the job fails on violations and becomes a required check.

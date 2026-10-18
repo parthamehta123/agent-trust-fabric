@@ -10,9 +10,10 @@ from dataclasses import dataclass
 from enum import StrEnum
 from typing import Annotated, Any, Final, Literal, Protocol
 
-from pydantic import BaseModel, ConfigDict, Field, StringConstraints
+from pydantic import BaseModel, ConfigDict, Field, StringConstraints, field_validator
 
 from trustkit.profiles import HttpsUrl, ScannerFailureMode, Scope
+from trustkit_http.ssrf import SsrfError, check_url_shape
 
 AgentId = Annotated[str, StringConstraints(pattern=r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")]
 """The agent's OAuth ``client_id``."""
@@ -100,6 +101,17 @@ class CardSpec(_Strict):
 
     endpoint: HttpsUrl
     skills: Annotated[tuple[SkillSpec, ...], Field(max_length=32)] = ()
+
+    @field_validator("endpoint")
+    @classmethod
+    def _routable_by_the_a2a_gateway(cls, v: str) -> str:
+        """Refuse at submission what the A2A gateway's SSRF vetting would refuse at call time
+        (ADR-0024 follow-up): same rules, one implementation. DNS is checked at call time."""
+        try:
+            check_url_shape(v)
+        except SsrfError as e:
+            raise ValueError(f"card endpoint: {e}") from None
+        return v
 
 
 class AgentSpec(_Strict):

@@ -125,3 +125,23 @@ def test_dependabot_respects_the_minimum_age_and_python_pin() -> None:
                 if "version-update:semver-minor" in i["update-types"]
             }
             assert "python" in ignored, u["directory"]
+
+
+@pytest.mark.security
+def test_ci_uv_matches_the_project_pin() -> None:
+    """One uv for laptops and CI: every setup-uv step pins the floor of required-version."""
+    import tomllib
+
+    root = WORKFLOWS[0].parents[2]
+    required = tomllib.loads((root / "pyproject.toml").read_text())["tool"]["uv"][
+        "required-version"
+    ]
+    floor = re.search(r">=\s*([0-9.]+)", required)
+    assert floor is not None
+    seen = 0
+    for path in WORKFLOWS:
+        for _, s in steps(load(path)):
+            if str(s.get("uses", "")).startswith("astral-sh/setup-uv@"):
+                seen += 1
+                assert s.get("with", {}).get("version") == floor.group(1), path.name
+    assert seen > 0

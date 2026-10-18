@@ -21,6 +21,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with: { persist-credentials: false }
       - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        with: { version: "0.12.23" } # = [tool.uv] required-version floor
       - run: uv sync --locked
       - run: uv run ruff check .
       - run: uv run ruff format --check .
@@ -31,6 +32,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with: { persist-credentials: false }
       - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        with: { version: "0.12.23" } # = [tool.uv] required-version floor
       - run: uv sync --locked
       - run: uv run mypy
 
@@ -40,6 +42,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with: { persist-credentials: false }
       - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        with: { version: "0.12.23" } # = [tool.uv] required-version floor
       - run: uv sync --locked
       - run: uv run pytest --cov --cov-report=xml
 
@@ -58,6 +61,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with: { persist-credentials: false }
       - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        with: { version: "0.12.23" } # = [tool.uv] required-version floor
       - run: uv sync --locked
       - name: Audit locked dependencies for known CVEs
         run: |
@@ -78,6 +82,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with: { persist-credentials: false }
       - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        with: { version: "0.12.23" } # = [tool.uv] required-version floor
       - run: uv sync --locked
       - run: make up
       - run: make e2e
@@ -94,6 +99,17 @@ jobs:
           done
       - if: always()
         run: make down
+
+  image-policy:
+    # ADR-0026 §29: every pinned base image is signature-verified or >= 14 days old. Report-only
+    # until 2026-10-25 (the pins that predate this check comply then), then required.
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with: { persist-credentials: false }
+      - run: python3 scripts/image_policy.py --report-only
 
   iac:
     # ADR-0026 §25: the same digest-pinned, signature-verified tools as on a laptop (OpenTofu,

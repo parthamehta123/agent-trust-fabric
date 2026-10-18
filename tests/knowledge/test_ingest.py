@@ -277,3 +277,94 @@ def test_scanner_failure_rejects() -> None:
         [(manifest(), TEXT)], config=CONFIG, scanner=Broken(), ingested_by="x", now=lambda: T
     )
     assert r.rejected == {"runbook-1": Rejection.CONTENT_BLOCKED}
+
+
+@pytest.mark.security
+class TestS3SyncWithdrawal:
+    """ADR-0026 §18: withdrawn documents leave the KB; nothing else is ever deleted."""
+
+    @pytest.fixture
+    def s3(self) -> Any:
+        import boto3
+        from moto import mock_aws
+
+        with mock_aws():
+            c = boto3.client("s3", region_name="us-east-1")
+            c.create_bucket(Bucket="kb-src")
+            yield c
+
+    @staticmethod
+    def keys(s3: Any) -> set[str]:
+        return {o["Key"] for o in s3.list_objects_v2(Bucket="kb-src").get("Contents", [])}
+
+    def export(self, *docs: tuple[dict[str, Any], str]) -> list[tuple[str, bytes]]:
+        return bedrock_objects(run(*docs).chunks, "corpus")
+
+    def test_withdrawn_document_is_removed(self, s3: Any) -> None:
+        from atf_knowledge_server.ingest import sync_objects
+
+        a, b = manifest(doc_id="keep"), manifest(doc_id="gone")
+        sync_objects(s3, "kb-src", "corpus", self.export((a, TEXT), (b, TEXT)))
+        assert any(k.startswith("corpus/gone/") for k in self.keys(s3))
+        uploaded, deleted = sync_objects(s3, "kb-src", "corpus", self.export((a, TEXT)))
+        assert uploaded == len(self.export((a, TEXT)))
+        left = self.keys(s3)
+        assert not any(k.startswith("corpus/gone/") for k in left)
+        assert any(k.startswith("corpus/keep/") for k in left)
+        assert deleted > 0
+
+    def test_objects_outside_the_layout_are_never_deleted(self, s3: Any) -> None:
+        from atf_knowledge_server.ingest import sync_objects
+
+        for key in ("corpus/README.txt", "corpus/notes/plan.md", "other/gone/0.txt"):
+            s3.put_object(Bucket="kb-src", Key=key, Body=b"x")
+        sync_objects(s3, "kb-src", "corpus", self.export((manifest(), TEXT)))
+        assert {"corpus/README.txt", "corpus/notes/plan.md", "other/gone/0.txt"} <= self.keys(s3)
+
+    def test_empty_export_refused_and_nothing_deleted(self, s3: Any) -> None:
+        from atf_knowledge_server.ingest import EmptyCorpusError, sync_objects
+
+        sync_objects(s3, "kb-src", "corpus", self.export((manifest(), TEXT)))
+        before = self.keys(s3)
+        with pytest.raises(EmptyCorpusError):
+            sync_objects(s3, "kb-src", "corpus", [])
+        assert self.keys(s3) == before
+
+    def test_deletes_only_after_every_upload(self, s3: Any) -> None:
+        """An upload failure must leave the previous corpus intact (no half-synced KB)."""
+        from atf_knowledge_server.ingest import sync_objects
+
+        sync_objects(s3, "kb-src", "corpus", self.export((manifest(doc_id="old"), TEXT)))
+        before = self.keys(s3)
+
+        class Failing:
+            def __init__(self, inner: Any) -> None:
+                self._inner = inner
+
+            def put_object(self, **kw: Any) -> None:
+                raise RuntimeError("AccessDenied")
+
+            def __getattr__(self, name: str) -> Any:
+                return getattr(self._inner, name)
+
+        with pytest.raises(RuntimeError):
+            sync_objects(
+                Failing(s3), "kb-src", "corpus", self.export((manifest(doc_id="new"), TEXT))
+            )
+        assert self.keys(s3) == before
+
+    def test_cli_empty_corpus_exits_nonzero(self, tmp_path: pathlib.Path) -> None:
+        d = tmp_path / "corpus"
+        d.mkdir()
+        (tmp_path / "collections.json").write_text(CONFIG.model_dump_json())
+        args = [
+            "--corpus",
+            str(d),
+            "--config",
+            str(tmp_path / "collections.json"),
+            "--out-s3",
+            "s3://kb-src/corpus",
+            "--ingested-by",
+            "ci",
+        ]
+        assert main(args) == 1
