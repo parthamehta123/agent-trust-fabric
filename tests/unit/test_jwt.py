@@ -470,3 +470,84 @@ class TestJwksEntryEdges:
         """TM-ING-03: a malformed entry must not break, or poison, the rest of the set."""
         doc = {"keys": [{"kty": "RSA", "kid": "bad", "n": "!!", "e": "AQAB"}]}
         assert JwksKeyResolver(fetch=_Fetcher(doc)).resolve("bad") is None
+
+
+# ----------------------------------------------------------------------------- ADR-0027
+
+
+@pytest.mark.security
+class TestKeyRotationUnderSameKid:
+    """ADR-0027: an IdP that rotates key material under the same kid recovers within one
+    rate-limited refresh, without giving forgers a way to amplify JWKS fetches."""
+
+    @staticmethod
+    def rotated(kid: str = "rsa-1") -> RSAKey:
+        return RSAKey.generate_key(2048, parameters={"kid": kid}, private=True)
+
+    @staticmethod
+    def setup(*docs: dict[str, Any]) -> tuple[TokenValidator, _Fetcher, _Clock]:
+        clock, fetch = _Clock(), _Fetcher(*docs)
+        resolver = JwksKeyResolver(fetch=fetch, now=clock)
+        return TokenValidator(policy(), resolver, now=lambda: NOW), fetch, clock
+
+    def test_rotation_under_same_kid_recovers_with_one_refresh(
+        self, rsa_key: RSAKey, mint: Mint
+    ) -> None:
+        new = self.rotated()
+        v, fetch, clock = self.setup(jwks(rsa_key), jwks(new))
+        v.validate(mint())  # warm: old key cached
+        clock.t += 61
+        assert v.validate(mint(key=new)).subject  # same kid, new material: recovers
+        assert fetch.calls == 2
+
+    def test_no_refresh_inside_the_rate_limit(self, rsa_key: RSAKey, mint: Mint) -> None:
+        new = self.rotated()
+        v, fetch, clock = self.setup(jwks(rsa_key), jwks(new))
+        v.validate(mint())
+        clock.t += 30
+        assert_rejected(v, mint(key=new), Reason.BAD_SIGNATURE)
+        assert fetch.calls == 1
+
+    def test_forged_signature_flood_is_rate_limited(self, rsa_key: RSAKey, mint: Mint) -> None:
+        """A forger presenting a known kid gets BAD_SIGNATURE and at most one fetch per 60 s."""
+        forger = self.rotated()
+        v, fetch, clock = self.setup(jwks(rsa_key))
+        v.validate(mint())
+        for _ in range(240):  # 120 s of attack, two tries per second
+            clock.t += 0.5
+            assert_rejected(v, mint(key=forger), Reason.BAD_SIGNATURE)
+        assert fetch.calls <= 1 + 3
+
+    def test_budget_is_shared_with_unknown_kid(self, rsa_key: RSAKey, mint: Mint) -> None:
+        forger = self.rotated()
+        v, fetch, clock = self.setup(jwks(rsa_key))
+        v.validate(mint())
+        clock.t += 61
+        assert_rejected(v, mint(key=self.rotated("nope")), Reason.UNKNOWN_KID)  # spends it
+        assert_rejected(v, mint(key=forger), Reason.BAD_SIGNATURE)  # no second fetch
+        assert fetch.calls == 2
+
+    def test_exactly_one_reverify(self, rsa_key: RSAKey, mint: Mint) -> None:
+        """Rotated JWKS, but the token was signed by neither key: one refresh, one retry, deny."""
+        v, fetch, clock = self.setup(jwks(rsa_key), jwks(self.rotated()))
+        v.validate(mint())
+        clock.t += 61
+        assert_rejected(v, mint(key=self.rotated()), Reason.BAD_SIGNATURE)
+        assert fetch.calls == 2
+
+    def test_static_resolvers_never_retry(self, validator: TokenValidator, mint: Mint) -> None:
+        assert_rejected(validator, mint(key=self.rotated()), Reason.BAD_SIGNATURE)
+
+
+@pytest.mark.security
+def test_default_revocation_window_is_five_minutes(rsa_key: RSAKey, ec_key: ECKey) -> None:
+    """ADR-0027: a key the IdP removes (e.g. after compromise) stops being trusted within 5 min
+    with the *default* settings, even while its kid keeps being presented."""
+    clock = _Clock()
+    r = JwksKeyResolver(fetch=_Fetcher(jwks(rsa_key, ec_key), jwks(ec_key)), now=clock)
+    assert r.max_key_age_s == 300
+    assert r.resolve("rsa-1") is not None
+    clock.t += 299
+    assert r.resolve("rsa-1") is not None
+    clock.t += 2
+    assert r.resolve("rsa-1") is None

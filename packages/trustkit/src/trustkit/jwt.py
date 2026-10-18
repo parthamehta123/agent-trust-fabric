@@ -9,7 +9,8 @@ Order of checks (cheapest and most dangerous first; each failure is terminal):
 5. header: typ (if required)   -> WRONG_TYP
 6. header: kid present, known  -> UNKNOWN_KID        (one rate-limited JWKS refresh)
 7. key type matches alg family -> ALG_NOT_ALLOWED
-8. signature                   -> BAD_SIGNATURE
+8. signature                   -> BAD_SIGNATURE      (rotated under same kid: one shared-budget
+                                                      refresh + one re-verify, ADR-0027)
 9. claims: required present    -> MISSING_CLAIM
 10. claim types strict         -> MALFORMED          (NumericDate must be int; no bool/str coercion)
 11. iss exact match            -> WRONG_ISSUER
@@ -33,7 +34,7 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from enum import StrEnum
 from types import MappingProxyType
-from typing import Any, Final, Protocol
+from typing import Any, Final, Protocol, runtime_checkable
 
 from joserfc import jwt as jose_jwt
 from joserfc.errors import BadSignatureError, JoseError
@@ -122,6 +123,14 @@ class KeyResolver(Protocol):
         ...
 
 
+@runtime_checkable
+class RotationAwareKeyResolver(KeyResolver, Protocol):
+    def resolve_rotated(self, kid: str, rejected: PublicKey) -> PublicKey | None:
+        """After ``rejected`` failed to verify a signature: refresh within the shared budget and
+        return a *different* key for ``kid`` if the IdP has rotated it, else ``None``."""
+        ...
+
+
 # ----------------------------------------------------------------------------- JWKS
 
 
@@ -169,19 +178,20 @@ class JwksKeyResolver:
     ``fetch`` is injected (HTTP lives in an adapter) and must only ever be pointed at the
     issuer's configured ``jwks_uri``.
 
-    Refresh rules (TM-ING-03):
+    Refresh rules (TM-ING-03, ADR-0027):
 
-    * Proactive: keys older than ``max_key_age_s`` trigger a refresh even when the kid is known,
-      so a key the IdP has retired stops being trusted.
-    * Unknown kid: at most one refresh per ``min_refresh_interval_s``, so an attacker spraying
-      random kids can't turn us into a JWKS-fetch amplifier.
+    * Proactive: keys older than ``max_key_age_s`` (5 min) trigger a refresh even when the kid is
+      known, so a key the IdP has revoked stops being trusted within that window.
+    * Unknown kid, or a known kid whose key failed a signature (rotation under the same kid): at
+      most one refresh per ``min_refresh_interval_s``, a single shared budget, so an attacker
+      spraying random kids or forged signatures can't turn us into a JWKS-fetch amplifier.
     * Failure: the last good key set is kept for availability, but never beyond
       ``max_staleness_s`` since the last *successful* fetch. After that, nothing resolves.
     """
 
     fetch: Callable[[], Mapping[str, Any]]
     min_refresh_interval_s: float = 60
-    max_key_age_s: float = 3_600
+    max_key_age_s: float = 300
     max_staleness_s: float = 86_400
     now: Callable[[], float] = time.monotonic
     _keys: dict[str, PublicKey] = field(default_factory=dict, init=False, repr=False)
@@ -199,6 +209,17 @@ class JwksKeyResolver:
             if self._last_success is None or t - self._last_success > self.max_staleness_s:
                 self._keys = {}
             return self._keys.get(kid)
+
+    def resolve_rotated(self, kid: str, rejected: PublicKey) -> PublicKey | None:
+        with self._lock:
+            t = self.now()
+            self._refresh_if_allowed(t)
+            if self._last_success is None or t - self._last_success > self.max_staleness_s:
+                self._keys = {}
+            fresh = self._keys.get(kid)
+            if fresh is None or fresh.as_dict(private=False) == rejected.as_dict(private=False):
+                return None
+            return fresh
 
     def _refresh_if_allowed(self, t: float) -> None:
         if self._last_attempt is not None and t - self._last_attempt < self.min_refresh_interval_s:
@@ -295,17 +316,22 @@ class TokenValidator:
         if key is None:
             raise TokenValidationError(Reason.UNKNOWN_KID)
 
-        if not isinstance(key, _ALG_KEY_TYPE[alg]) or (
-            alg in _ALG_EC_CURVE and key.as_dict().get("crv") != _ALG_EC_CURVE[alg]
-        ):
-            raise TokenValidationError(Reason.ALG_NOT_ALLOWED, "key type does not match alg")
-
         try:
-            verified = jose_jwt.decode(token, key, algorithms=[alg])
+            verified = self._verify(token, key, alg)
         except BadSignatureError:
-            raise TokenValidationError(Reason.BAD_SIGNATURE) from None
-        except (JoseError, ValueError, TypeError):
-            raise TokenValidationError(Reason.MALFORMED, "jws decode") from None
+            # ADR-0027: the IdP may have rotated key material under the same kid. One refresh
+            # (shared rate limit) and exactly one re-verify against a *different* key; never more.
+            fresh = (
+                self._keys.resolve_rotated(kid, key)
+                if isinstance(self._keys, RotationAwareKeyResolver)
+                else None
+            )
+            if fresh is None:
+                raise TokenValidationError(Reason.BAD_SIGNATURE) from None
+            try:
+                verified = self._verify(token, fresh, alg)
+            except BadSignatureError:
+                raise TokenValidationError(Reason.BAD_SIGNATURE) from None
 
         claims = verified.claims
         if not isinstance(claims, dict):
@@ -314,6 +340,20 @@ class TokenValidator:
         return VerifiedToken(
             header=MappingProxyType(dict(header)), claims=MappingProxyType(dict(claims))
         )
+
+    @staticmethod
+    def _verify(token: str, key: PublicKey, alg: str) -> Any:
+        """Key/alg family check, then signature. ``BadSignatureError`` propagates."""
+        if not isinstance(key, _ALG_KEY_TYPE[alg]) or (
+            alg in _ALG_EC_CURVE and key.as_dict().get("crv") != _ALG_EC_CURVE[alg]
+        ):
+            raise TokenValidationError(Reason.ALG_NOT_ALLOWED, "key type does not match alg")
+        try:
+            return jose_jwt.decode(token, key, algorithms=[alg])
+        except BadSignatureError:
+            raise
+        except (JoseError, ValueError, TypeError):
+            raise TokenValidationError(Reason.MALFORMED, "jws decode") from None
 
     def _check_claims(self, c: dict[str, Any]) -> None:
         p = self._policy

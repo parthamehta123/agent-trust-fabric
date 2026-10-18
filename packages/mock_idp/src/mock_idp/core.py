@@ -161,7 +161,9 @@ class MockIdp:
         self._now = now
         self._id_jag_ttl = id_jag_ttl_s
         self._at_ttl = access_token_ttl_s
-        self._org_key = RSAKey.generate_key(2048, parameters={"kid": "org-k1"}, private=True)
+        # kid = RFC 7638 thumbprint: new key material always means a new kid, as with a real IdP
+        # (ADR-0027). Fixed kids made a recreated mock look like a forger to every validator.
+        self._org_key = RSAKey.generate_key(2048, private=True, auto_kid=True)
         self._servers: dict[str, AuthorizationServer] = {}
         self._server_keys: dict[str, RSAKey] = {}
         self._clients: dict[str, ClientRegistration] = {}
@@ -193,9 +195,7 @@ class MockIdp:
 
     def add_authorization_server(self, server: AuthorizationServer) -> None:
         self._servers[server.as_id] = server
-        self._server_keys[server.as_id] = RSAKey.generate_key(
-            2048, parameters={"kid": f"{server.as_id}-k1"}, private=True
-        )
+        self._server_keys[server.as_id] = RSAKey.generate_key(2048, private=True, auto_kid=True)
 
     def jwks(self, as_id: str | None = None) -> dict[str, Any]:
         """Public JWKS of the org AS (``None``) or a custom AS."""
