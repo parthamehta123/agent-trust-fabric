@@ -147,6 +147,10 @@ make iac-validate  # fmt, validate, tofu test (every module + dev + bootstrap), 
 `make iac-plan` and `make iac-apply` exist for CI. They refuse to run without
 `ATF_ALLOW_AWS=1` and web-identity credentials.
 
+## License
+
+[Apache License 2.0](LICENSE).
+
 [RFC 8693]: https://www.rfc-editor.org/rfc/rfc8693
 [RFC 7523]: https://www.rfc-editor.org/rfc/rfc7523
 [RFC 9068]: https://www.rfc-editor.org/rfc/rfc9068
