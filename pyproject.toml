@@ -1,6 +1,10 @@
 # Virtual uv workspace root: no [project] table, so the root is never built or published.
 # Each package/service declares its own runtime deps; shared dev tooling lives here.
 
+[tool.uv]
+# One uv for laptops and CI (setup-uv pins the same version). Releases >= 14 days old only.
+required-version = ">=0.12.23,<0.13"
+
 [tool.uv.workspace]
 members = ["packages/*", "services/*"]
 

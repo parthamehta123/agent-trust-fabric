@@ -73,7 +73,8 @@ agent B ──(workload_B + T_B)──▶ tool gateway ──exchange @ tool AS�
   fails, nothing is minted or forwarded (503).
 - Runtime endpoints in cards must be **fully qualified** hostnames: the shared SSRF vetting
   refuses single-label names (found in compose; agent-beta is `agent-beta.agents.internal`). The
-  registry should reject non-FQDN card endpoints at approval time (follow-up).
+  registry rejects non-FQDN card endpoints at **submission**, using the same
+  `trustkit_http.ssrf.check_url_shape` the gateway applies at call time (done 2026-10-19).
 - An agent with **no** `may_delegate_to` entries can't even bind at the A2A gateway (401). A
   one-sided edge, where the caller offers but the target doesn't accept, is a 403
   `delegation_denied`.

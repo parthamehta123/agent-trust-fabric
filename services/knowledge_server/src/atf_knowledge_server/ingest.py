@@ -6,13 +6,14 @@ import argparse
 import hashlib
 import json
 import pathlib
+import re
 import sys
 import time
 from collections import Counter
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from enum import StrEnum
-from typing import Annotated, Final
+from typing import Annotated, Any, Final
 
 from pydantic import BaseModel, ConfigDict, StringConstraints, ValidationError
 
@@ -219,18 +220,58 @@ def main(argv: Sequence[str] | None = None) -> int:
     if target is None:
         write_index(report.chunks, args.out)
     else:
-        _put_all(target, bedrock_objects(report.chunks, target[1]))
+        try:
+            _put_all(target, bedrock_objects(report.chunks, target[1]))
+        except EmptyCorpusError as e:
+            print(f"refused: {e}", file=sys.stderr)
+            return 1
     print(f"indexed {len(report.chunks)} chunks from {len(docs)} documents")
     return 0
 
 
+_LAYOUT: Final = re.compile(r"^[A-Za-z0-9._-]{1,128}/[0-9]+\.txt(\.metadata\.json)?$")
+"""``<doc_id>/<n>.txt`` and its sidecar: the only objects this tool ever deletes."""
+
+
+class EmptyCorpusError(ValueError):
+    """A sync that would delete every chunk is refused: an empty export is far more likely a
+    mistake (wrong directory, failed checkout) than an intentional wipe."""
+
+
+def sync_objects(
+    s3: Any, bucket: str, prefix: str, objects: Sequence[tuple[str, bytes]]
+) -> tuple[int, int]:
+    """Make ``prefix`` hold exactly ``objects`` (ADR-0026 §18): upload everything first, then
+    delete objects in our layout that the export no longer produces, so withdrawn documents
+    leave the KB on the next data-source sync (``data_deletion_policy = DELETE``).
+
+    Returns ``(uploaded, deleted)``. Deletes happen only after every upload succeeded, and never
+    outside the layout or the prefix."""
+    if not objects:
+        raise EmptyCorpusError("refusing to sync an empty export (it would delete the corpus)")
+    base = prefix.strip("/")
+    root = f"{base}/" if base else ""
+    for key, body in objects:
+        s3.put_object(Bucket=bucket, Key=key, Body=body)
+    wanted = {key for key, _ in objects}
+    stale: list[str] = []
+    for page in s3.get_paginator("list_objects_v2").paginate(Bucket=bucket, Prefix=root):
+        for item in page.get("Contents", []):
+            key = str(item["Key"])
+            if key not in wanted and _LAYOUT.fullmatch(key[len(root) :]):
+                stale.append(key)
+    for i in range(0, len(stale), 1000):
+        batch = [{"Key": k} for k in stale[i : i + 1000]]
+        s3.delete_objects(Bucket=bucket, Delete={"Objects": batch, "Quiet": True})
+    return len(objects), len(stale)
+
+
 def _put_all(target: tuple[str, str], objects: Sequence[tuple[str, bytes]]) -> None:
-    """Upload with the task role; the bucket's default SSE-KMS key encrypts each object."""
+    """Sync with the ingest role; the bucket's default SSE-KMS key encrypts each object."""
     import boto3
 
-    s3 = boto3.client("s3")
-    for key, body in objects:
-        s3.put_object(Bucket=target[0], Key=key, Body=body)
+    uploaded, deleted = sync_objects(boto3.client("s3"), target[0], target[1], objects)
+    print(f"uploaded {uploaded} objects; removed {deleted} withdrawn")
 
 
 if __name__ == "__main__":  # pragma: no cover

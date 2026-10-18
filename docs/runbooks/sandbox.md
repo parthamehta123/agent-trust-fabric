@@ -104,6 +104,8 @@ python -m atf_knowledge_server.ingest --corpus deploy/local/corpus \
 aws bedrock-agent start-ingestion-job --knowledge-base-id <kb_id> --data-source-id <data_source_id>
 ```
 
+The upload is a sync: documents no longer in the corpus are removed after every upload
+succeeds, and the data-source sync then drops their vectors. An empty corpus is refused.
 A rejected document means nothing is uploaded. Fix the manifest or the document; never
 "force" it.
 

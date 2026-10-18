@@ -291,3 +291,26 @@ class TestInternalHosts:
         assert seen == ["10.40.3.9"]
         with pytest.raises(SsrfError):
             c.post_json("https://registry.atf.example.com/x", {}, headers={})
+
+
+@pytest.mark.security
+class TestUrlShape:
+    """``check_url_shape`` is the DNS-free half of ``vet_url``, shared with the registry."""
+
+    def test_shape_fields(self) -> None:
+        from trustkit_http.ssrf import check_url_shape
+
+        s = check_url_shape("https://Agent.Example.com:8443/a2a?x=1")
+        assert (s.hostname, s.port, s.path) == ("agent.example.com", 8443, "/a2a?x=1")
+
+    @pytest.mark.parametrize(
+        "url",
+        ["http://a.example.com/", "https://a/", "https://1.2.3.4/", "https://u@a.example.com/"],
+    )
+    def test_vet_url_and_shape_agree(self, url: str) -> None:
+        from trustkit_http.ssrf import check_url_shape
+
+        with pytest.raises(SsrfError):
+            check_url_shape(url)
+        with pytest.raises(SsrfError):
+            vet_url(url, resolver=resolver(PUBLIC))

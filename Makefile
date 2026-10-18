@@ -6,7 +6,7 @@ PACKAGES := mock-idp gateway-emulator atf-agent-runtime atf-interceptor atf-mcp-
             atf-inference-gateway mock-llm atf-agent-registry atf-a2a-gateway \
             atf-knowledge-server
 
-.PHONY: certs kb-index wheels up e2e logs-scan down clean iac-tools iac-validate iac-plan iac-apply
+.PHONY: certs kb-index wheels up e2e logs-scan down clean iac-tools iac-validate iac-plan iac-apply image-policy
 
 certs:  ## ephemeral CA, service certs, client key, configs -> .local-ca/ (gitignored)
 	uv run python -m devstack.bootstrap --out .local-ca
@@ -60,6 +60,9 @@ TFLINT  := atf-iac/tflint:0.64.0
 CHECKOV := atf-iac/checkov:3.3.20
 IAC_RUN := docker run --rm --user $(ATF_UID):$(ATF_GID) -e HOME=/tmp -e TF_PLUGIN_CACHE_DIR=/cache -e TFLINT_PLUGIN_DIR=/cache/tflint \
 	-v $(CURDIR)/infra:/w/infra -v $(CURDIR)/policies:/w/policies:ro -v $(CURDIR)/build/iac-cache:/cache
+
+image-policy:  ## every pinned base image is signature-verified or >= 14 days old (needs network)
+	uv run python scripts/image_policy.py
 
 iac-tools:  ## build the verified tflint/checkov images (signature + checksum checks, fail closed)
 	scripts/iac-tools.sh

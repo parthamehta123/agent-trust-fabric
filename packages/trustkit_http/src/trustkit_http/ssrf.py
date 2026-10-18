@@ -159,13 +159,17 @@ def is_forbidden_ip(ip: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
     )
 
 
-def vet_url(
-    url: str,
-    *,
-    resolver: Resolver = default_resolver,
-    allow: frozenset[Network] = frozenset(),
-    internal_hosts: InternalHosts | None = None,
-) -> VettedTarget:
+@dataclass(frozen=True)
+class UrlShape:
+    hostname: str
+    port: int
+    path: str
+
+
+def check_url_shape(url: str) -> UrlShape:
+    """Every rule ``vet_url`` applies that doesn't need DNS: https only, no userinfo, fragments,
+    backslashes or IP literals, a fully qualified host name, a valid port. Used at the call site
+    and wherever a URL is accepted for later use (e.g. registry Agent Cards, ADR-0024)."""
     if "\\" in url or "#" in url or not url.startswith("https://"):
         raise SsrfError("url must be https without fragments or backslashes")
     parts = urlsplit(url)
@@ -187,6 +191,19 @@ def vet_url(
         raise SsrfError("invalid port") from None
     if not 0 < port < 65536:
         raise SsrfError("invalid port")
+    path = (parts.path or "/") + (f"?{parts.query}" if parts.query else "")
+    return UrlShape(hostname=hostname, port=port, path=path)
+
+
+def vet_url(
+    url: str,
+    *,
+    resolver: Resolver = default_resolver,
+    allow: frozenset[Network] = frozenset(),
+    internal_hosts: InternalHosts | None = None,
+) -> VettedTarget:
+    shape = check_url_shape(url)
+    hostname, port = shape.hostname, shape.port
 
     try:
         answers = resolver(hostname, port)
@@ -207,8 +224,9 @@ def vet_url(
     elif any(is_forbidden_ip(ip) and not any(ip in net for net in allow) for ip in ips):
         # One internal answer poisons the set; never say which (log-safe, no recon help).
         raise SsrfError("hostname resolves to a non-public address")
-    path = (parts.path or "/") + (f"?{parts.query}" if parts.query else "")
-    return VettedTarget(hostname=hostname, port=port, path=path, ip=str(sorted(ips, key=str)[0]))
+    return VettedTarget(
+        hostname=hostname, port=port, path=shape.path, ip=str(sorted(ips, key=str)[0])
+    )
 
 
 class PinnedClient:
