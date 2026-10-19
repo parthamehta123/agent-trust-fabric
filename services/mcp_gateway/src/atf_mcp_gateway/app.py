@@ -41,6 +41,7 @@ from trustkit.config import ca_bundle, load_document
 from trustkit.dpop import (
     DpopError,
     DpopGuard,
+    auth_challenge,
     challenge_headers,
     dpop_guard_from_env,
     guard_error_status,
@@ -152,6 +153,15 @@ def bundle_authorizer(
 
 def create_data_app(proxy: McpProxy, binder: Binder, dpop: DpopGuard | None = None) -> FastAPI:
     app = FastAPI(title="mcp-gateway (data plane)", docs_url=None, redoc_url=None)
+
+    if dpop is not None:  # RFC 9449 §7.1/§7.2: generic 401s advertise what is actually accepted
+
+        @app.middleware("http")
+        async def _dpop_challenge(request: Request, call_next: Any) -> Response:
+            response: Response = await call_next(request)
+            if response.status_code == 401 and response.headers.get("www-authenticate") == "Bearer":
+                response.headers["WWW-Authenticate"] = auth_challenge(dpop)
+            return response
 
     @app.post("/mcp")
     async def mcp(request: Request) -> Response:

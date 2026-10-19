@@ -260,3 +260,57 @@ class TestSecretFetcher:
                 fetch(arn)
             with pytest.raises(SecretUnavailableError):
                 fetch("arn:aws:secretsmanager:us-east-1:123456789012:secret:nope")
+
+
+@pytest.mark.security
+class TestRfcReviewAtTheGateway:
+    """RFC 9449 self-review (2026-10-19), findings #3 and #7, at the MCP gateway."""
+
+    def test_3_no_credentials_gets_a_dpop_challenge_without_error(self, rsa_key: RSAKey) -> None:
+        c, _ = client(rsa_key, DpopMode.REQUIRED, [])
+        r = c.post("/mcp", json=call("tools/list"))
+        assert r.status_code == 401
+        assert r.headers["www-authenticate"] == 'DPoP algs="ES256"'
+
+    def test_3_optional_mode_advertises_both_schemes(self, rsa_key: RSAKey) -> None:
+        c, _ = client(rsa_key, DpopMode.OPTIONAL, [])
+        r = c.post(
+            "/mcp",
+            json=call("tools/list"),
+            headers={"Authorization": "Bearer not-a-jwt", "X-Subject-Token": "t2"},
+        )
+        assert r.status_code == 401
+        assert r.headers["www-authenticate"] == 'Bearer, DPoP algs="ES256"'
+
+    def test_4_nonce_challenge_is_not_cacheable(self, rsa_key: RSAKey, mint: Mint) -> None:
+        c, _ = client(rsa_key, DpopMode.REQUIRED, [])
+        key = DpopKey()
+        tok = bound_token(mint, key)
+        r = c.post(
+            "/mcp",
+            json=call("tools/list"),
+            headers={
+                "Authorization": f"DPoP {tok}",
+                "DPoP": proof(key, tok, None),
+                "X-Subject-Token": "t2",
+            },
+        )
+        assert (r.status_code, r.headers["cache-control"]) == (401, "no-store")
+
+    def test_7_two_dpop_headers_are_refused(self, rsa_key: RSAKey, mint: Mint) -> None:
+        c, seen = client(rsa_key, DpopMode.REQUIRED, [])
+        key = DpopKey()
+        tok = bound_token(mint, key)
+        p = proof(key, tok, None)
+        r = c.post(
+            "/mcp",
+            json=call("tools/list"),
+            headers=[
+                ("Authorization", f"DPoP {tok}"),
+                ("DPoP", p),
+                ("DPoP", p),
+                ("X-Subject-Token", "t2"),
+            ],
+        )
+        assert r.status_code == 400
+        assert seen == []

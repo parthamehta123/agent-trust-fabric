@@ -226,7 +226,7 @@ class TestReplayCache:
 
     def test_full_cache_fails_closed(self) -> None:
         c = Clock()
-        r = ReplayCache(max_entries=2, now=c)
+        r = ReplayCache(max_entries=2, per_client=2, now=c)
         r.add("a")
         r.add("b")
         rejected(lambda: r.add("c"), DpopReason.CACHE_FULL)
@@ -289,7 +289,7 @@ class TestGuard:
         h = {"authorization": f"DPoP {TOKEN}", "dpop": "x.y.z"}
         rejected(lambda: self.guard(h, {"sub": "a"}), DpopReason.REQUIRED)
 
-    @pytest.mark.parametrize("auth", ["", "Bearer", "Basic abc", "dpop abc"])
+    @pytest.mark.parametrize("auth", ["", "Bearer", "Basic abc", "DPoPx abc"])
     def test_missing_credentials(self, auth: str) -> None:
         with pytest.raises(ValueError, match="missing credentials"):
             self.guard({"authorization": auth}, {"sub": "a"})
@@ -309,6 +309,7 @@ def test_challenge_headers() -> None:
     assert h == {
         "WWW-Authenticate": 'DPoP error="use_dpop_nonce", algs="ES256"',
         "DPoP-Nonce": "1.mac",
+        "Cache-Control": "no-store",  # §8.2: a nonce-carrying response is never cacheable
     }
     assert "DPoP-Nonce" not in challenge_headers(DpopError(DpopReason.REPLAY))
 
@@ -397,3 +398,150 @@ class TestDpopPost:
 
         dpop_post(DpopKey(), raw)(URL, {}, {"X-Other": "1"})
         assert seen == [{"X-Other": "1"}]
+
+
+# ----------------------------------------------------------------------------- RFC review fixes
+
+
+@pytest.mark.security
+class TestReviewFixes:
+    """Regression tests for the RFC 9449 self-review (2026-10-19), one per finding."""
+
+    def test_1_one_agent_cannot_exhaust_the_replay_cache_for_others(self) -> None:
+        """Reproduced before the fix: agent A filled the shared cache and B got CACHE_FULL."""
+        c = Clock()
+        nonces = NonceIssuer(KEY, now=c)
+        v = DpopVerifier(
+            nonces=nonces,
+            replay=ReplayCache(max_entries=200, per_client=50, now=c),
+            now=lambda: int(c.t),
+        )
+        noisy, innocent = DpopKey(), DpopKey()
+
+        def send(key: DpopKey, client: str) -> Any:
+            p = key.proof(
+                "POST", URL, access_token=TOKEN, nonce=nonces.issue(client), now=lambda: int(c.t)
+            )
+            return v.verify(
+                p,
+                method="POST",
+                url=URL,
+                access_token=TOKEN,
+                expected_jkt=key.jkt,
+                client_id=client,
+            )
+
+        for _ in range(50):
+            send(noisy, "noisy")
+        rejected(lambda: send(noisy, "noisy"), DpopReason.CACHE_FULL)  # only its own quota
+        assert send(innocent, "innocent").jkt == innocent.jkt  # others unaffected
+
+    def test_1_global_backstop_still_fails_closed(self) -> None:
+        c = Clock()
+        r = ReplayCache(max_entries=3, per_client=2, now=c)
+        r.add("a", "x")
+        r.add("b", "x")
+        r.add("c", "y")
+        rejected(lambda: r.add("d", "z"), DpopReason.CACHE_FULL)
+
+    def test_1_replay_is_per_client_and_still_detected(self) -> None:
+        r = ReplayCache(now=Clock())
+        r.add("same-jti", "a")
+        r.add("same-jti", "b")  # another client's identical jti is not a replay of a's
+        rejected(lambda: r.add("same-jti", "a"), DpopReason.REPLAY)
+
+    @pytest.mark.parametrize(
+        "htu",
+        [
+            "https://MCP.atf.example.com/mcp",
+            "https://mcp.atf.example.com:443/mcp",
+            "https://mcp.atf.example.com/mcp?x=1",
+            "https://mcp.atf.example.com/mcp#frag",
+        ],
+    )
+    def test_2_equivalent_htu_spellings_are_accepted(self, htu: str) -> None:
+        key, v, n, c = setup()
+        assert verify(v, raw_proof(key, n, c, htu=htu), key).jkt == key.jkt
+
+    @pytest.mark.parametrize(
+        "htu",
+        [
+            "https://evil.example.com/mcp",
+            "https://mcp.atf.example.com/mcp/admin",
+            "https://mcp.atf.example.com:8443/mcp",
+            "http://mcp.atf.example.com/mcp",
+            "not a url",
+        ],
+    )
+    def test_2_different_targets_are_still_refused(self, htu: str) -> None:
+        key, v, n, c = setup()
+        rejected(lambda: verify(v, raw_proof(key, n, c, htu=htu), key), DpopReason.WRONG_TARGET)
+
+    @pytest.mark.parametrize("scheme", ["dpop", "DPOP", "DPoP"])
+    def test_5_scheme_is_case_insensitive(self, scheme: str) -> None:
+        key, v, n, c = setup()
+        claims = {"sub": "agent-a", "client_id": "agent-a", "cnf": {"jkt": key.jkt}}
+        h = {"authorization": f"{scheme} {TOKEN}", "dpop": proof(key, n, c)}
+        out = authenticate_workload(
+            h,
+            method="POST",
+            url=URL,
+            validate=validated(claims),
+            verifier=v,
+            mode=DpopMode.REQUIRED,
+        )
+        assert out.bound
+
+    def test_5_lowercase_bearer_with_a_bound_token_is_still_refused(self) -> None:
+        _, v, _, _ = setup()
+        claims = {"sub": "a", "cnf": {"jkt": "x"}}
+        rejected(
+            lambda: authenticate_workload(
+                {"authorization": f"bearer {TOKEN}"},
+                method="POST",
+                url=URL,
+                validate=validated(claims),
+                verifier=v,
+                mode=DpopMode.OPTIONAL,
+            ),
+            DpopReason.MISSING,
+        )
+
+    def test_3_challenge_advertises_what_is_accepted(self) -> None:
+        from trustkit.dpop import DpopGuard, auth_challenge
+
+        def guard(mode: DpopMode) -> DpopGuard:
+            _, v, _, _ = setup()
+            return DpopGuard(
+                public_url="https://mcp.atf.example.com",
+                mode=mode,
+                verifier=v,
+                validate=lambda t: None,
+            )
+
+        assert auth_challenge(None) == "Bearer"
+        assert auth_challenge(guard(DpopMode.OPTIONAL)) == 'Bearer, DPoP algs="ES256"'
+        assert auth_challenge(guard(DpopMode.REQUIRED)) == 'DPoP algs="ES256"'
+        for g in (None, guard(DpopMode.OPTIONAL), guard(DpopMode.REQUIRED)):
+            assert "error" not in auth_challenge(g)  # §7.2: no error code without credentials
+
+
+def raw_proof(key: DpopKey, nonces: NonceIssuer, c: Clock, *, htu: str) -> str:
+    """A proof whose ``htu`` claim is exactly ``htu`` (DpopKey.proof always canonicalises)."""
+    from cryptography.hazmat.primitives import hashes
+    from cryptography.hazmat.primitives.asymmetric import ec
+
+    from trustkit.signing import der_to_jose_es256
+
+    header = {"typ": "dpop+jwt", "alg": "ES256", "jwk": dict(key.public_jwk)}
+    claims = {
+        "jti": "jti-" + htu.encode().hex()[:24],
+        "htm": "POST",
+        "htu": htu,
+        "iat": int(c.t),
+        "ath": access_token_hash(TOKEN),
+        "nonce": nonces.issue("agent-a"),
+    }
+    signing_input = f"{b64(header)}.{b64(claims)}".encode()
+    sig = der_to_jose_es256(key._key.sign(signing_input, ec.ECDSA(hashes.SHA256())))
+    return f"{signing_input.decode()}.{base64.urlsafe_b64encode(sig).rstrip(b'=').decode()}"
