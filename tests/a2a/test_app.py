@@ -229,3 +229,15 @@ class TestBuildApp:
         for k, v in env.items():
             monkeypatch.setenv(k, v)
         assert TestClient(app_from_env()).get("/ping").status_code == 200
+
+
+@pytest.mark.security
+def test_two_dpop_headers_are_refused(client: Any, world: World) -> None:
+    """RFC 9449 §4.3(1), review finding #7: more than one DPoP header is refused outright."""
+    c, rig = client
+    h = auth(world)
+    r = c.post(
+        f"/agents/{B}/a2a", json=rpc(), headers=[*h.items(), ("DPoP", "a.b.c"), ("DPoP", "a.b.c")]
+    )
+    assert r.status_code == 400
+    assert rig.upstream.calls == []

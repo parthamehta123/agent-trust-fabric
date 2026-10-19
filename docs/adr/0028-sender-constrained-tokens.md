@@ -114,7 +114,7 @@ stateless server nonce.**
     with 5-minute epochs. It accepts the current epoch and the previous one.
   - `K_nonce` is a per-environment secret held in Secrets Manager and shared by that plane's
     gateways. Every instance can validate any instance's nonce with no shared state, and a
-    captured proof expires with its epoch.
+    captured proof is bounded first by the ±60 s `iat` window, then by its epoch.
   - The per-instance `jti` cache blocks immediate replay to the same instance.
   - *Not chosen:* a shared DynamoDB replay table (conditional put with TTL). It's exact, but adds
     a write and a dependency to every request. We'd revisit it if the audit shows replay attempts.
@@ -140,7 +140,9 @@ stateless server nonce.**
 
 - **Positive:**
   - A stolen workload token, T2 or pair is useless without the agent's in-memory key.
-  - A stolen proof is single-use per instance and expires with its nonce epoch (≤ 10 min).
+  - A stolen proof is single-use per instance and, across instances, usable only within the
+    ±60 s `iat` window, and only for the exact same request and token (`htm`, `htu`, `ath`).
+    The nonce epoch (5–10 min) is the looser bound. *(Corrected by the 2026-10-19 review.)*
   - No PKI to run, and the IdP stays the only issuer.
 - **Negative:**
   - About 1 ES256 sign per call in the agent and 1 verify in the gateway (sub-millisecond).
@@ -246,3 +248,35 @@ Proven end to end:
 
 AWS still defaults to `optional` (`var.dpop_mode`), because a real deployment starts there and
 flips per the runbook.
+
+## RFC 9449 self-review (2026-10-19)
+
+Every MUST and SHOULD in RFC 9449 §4.2, §4.3, §6–§9 and §11 was checked against the code. No
+finding admitted a request that should have been refused; everything already failed closed.
+Fixed, each with a regression test:
+
+1. **Availability:** the replay cache's cap was shared, so one authenticated agent sending
+   valid proofs could fill it and have *every* agent refused with 503 (reproduced). Entries are
+   now partitioned per client with a per-client quota (default 20,000), so an agent can only
+   exhaust its own share. The global cap (200,000) remains a memory backstop.
+2. **§4.3 normalisation:** the proof's `htu` claim was compared literally, so equivalent
+   spellings (host case, `:443`, query, fragment) were refused (reproduced). Both sides are now
+   canonicalised; a different host, path, port or scheme is still refused.
+3. **§7.1/§7.2 challenges:** generic 401s said `WWW-Authenticate: Bearer` even in `required`
+   mode. They now advertise what is accepted: `Bearer` when DPoP is off, `Bearer, DPoP
+   algs="ES256"` while optional, `DPoP algs="ES256"` when required. No `error` parameter is
+   sent when no credentials were sent.
+4. **§8.2:** responses carrying `DPoP-Nonce` are `Cache-Control: no-store`.
+5. **RFC 7235:** the `Authorization` scheme is matched case-insensitively. A bound token sent
+   as `bearer` is still refused.
+6. **Documentation:** the cross-instance replay bound is the ±60 s `iat` window, not the
+   nonce epoch (corrected above and in RR-10).
+7. **§4.3(1):** "reject more than one `DPoP` header" already held at every gateway
+   (duplicate-header refusal); it's now pinned by a test at each.
+
+Verified correct and unchanged:
+- **Proof checks:** `typ`, ES256-only (no `none`, no MAC), public-only P-256 `jwk` with an
+  on-curve point, 64-byte signatures, `htm`, `ath`, `iat` window, `jti` size.
+- **Binding:** `cnf.jkt` key binding, and a bound token sent as Bearer is refused (§7.2).
+- **Nonces:** always required (§11.3); a thief can't obtain one (the key check comes first).
+- **Replay window:** the replay window covers the whole `iat` acceptance span.

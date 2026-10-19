@@ -754,3 +754,16 @@ def test_cedar_denies_even_if_grant_lists_model() -> None:
     env = Env(bundle=LoadedBundle(b, raw=b"", pdp=CedarPdp(GUARDRAILS, {AGENT: g})))
     chat_fails(env, "model_not_allowed", 403)
     assert env.model.calls == []
+
+
+@pytest.mark.security
+def test_two_dpop_headers_are_refused(api: tuple[TestClient, Env], mint: Mint) -> None:
+    """RFC 9449 §4.3(1), review finding #7: more than one DPoP header is refused outright."""
+    c, _env = api
+    h = workload(mint)
+    r = c.post(
+        "/v1/chat/completions",
+        json=req(),
+        headers=[*h.items(), ("DPoP", "a.b.c"), ("DPoP", "a.b.c")],
+    )
+    assert r.status_code == 400

@@ -54,6 +54,7 @@ __all__ = [
     "NonceIssuer",
     "ReplayCache",
     "access_token_hash",
+    "auth_challenge",
     "canonical_htu",
     "dpop_guard_from_env",
     "dpop_post",
@@ -203,32 +204,59 @@ class NonceIssuer:
 
 
 class ReplayCache:
-    """Per-instance ``jti`` cache. Bounded: when full of unexpired entries it refuses new proofs
-    (fail closed) rather than evicting, which would reopen replay."""
+    """Per-instance ``jti`` cache, **partitioned by client**. Bounded, and full means refuse (fail
+    closed) rather than evict, which would reopen replay.
+
+    Each client has its own quota, so one agent, even an authenticated or compromised one sending
+    valid proofs as fast as it can, can only exhaust *its own* share; other agents keep working
+    (review finding #1). The global cap is a memory backstop that would take
+    ``max_entries / per_client`` such agents to reach."""
 
     def __init__(
         self,
         *,
         ttl_s: float = 2 * IAT_WINDOW_S,
         max_entries: int = 200_000,
+        per_client: int = 20_000,
         now: Callable[[], float] = time.monotonic,
     ) -> None:
-        self._ttl, self._max, self._now = ttl_s, max_entries, now
-        self._seen: dict[str, float] = {}
+        if not 0 < per_client <= max_entries:
+            raise ValueError("per-client quota must be positive and within the global cap")
+        self._ttl, self._max, self._per_client, self._now = ttl_s, max_entries, per_client, now
+        self._seen: dict[str, dict[str, float]] = {}
+        self._total = 0
         self._lock = threading.Lock()
 
-    def add(self, jti: str) -> None:
-        """Record ``jti``; raises REPLAY if seen within the TTL, CACHE_FULL if saturated."""
+    def _purge(self, client: str, t: float) -> None:
+        live = {k: exp for k, exp in self._seen.get(client, {}).items() if exp > t}
+        self._total -= len(self._seen.get(client, {})) - len(live)
+        if live:
+            self._seen[client] = live
+        else:
+            self._seen.pop(client, None)
+
+    def add(self, jti: str, client_id: str = "") -> None:
+        """Record ``jti`` for ``client_id``. Raises REPLAY if seen within the TTL, CACHE_FULL if
+        this client's quota (or, as a backstop, the whole cache) is saturated."""
         with self._lock:
             t = self._now()
-            if len(self._seen) >= self._max:
-                self._seen = {k: exp for k, exp in self._seen.items() if exp > t}
-                if len(self._seen) >= self._max:
-                    raise DpopError(DpopReason.CACHE_FULL)
-            exp = self._seen.get(jti)
+            mine = self._seen.get(client_id, {})
+            exp = mine.get(jti)
             if exp is not None and exp > t:
                 raise DpopError(DpopReason.REPLAY)
-            self._seen[jti] = t + self._ttl
+            if len(mine) >= self._per_client:
+                self._purge(client_id, t)
+                if len(self._seen.get(client_id, {})) >= self._per_client:
+                    raise DpopError(DpopReason.CACHE_FULL)
+            if self._total >= self._max:
+                for client in list(self._seen):
+                    self._purge(client, t)
+                if self._total >= self._max:
+                    raise DpopError(DpopReason.CACHE_FULL)
+            bucket = self._seen.setdefault(client_id, {})
+            if jti not in bucket:
+                self._total += 1
+            bucket[jti] = t + self._ttl
 
 
 @dataclass(frozen=True)
@@ -297,7 +325,12 @@ class DpopVerifier:
         except SigningError:
             raise DpopError(DpopReason.BAD_SIGNATURE) from None
 
-        if claims.get("htm") != method.upper() or claims.get("htu") != canonical_htu(url):
+        # RFC 9449 §4.3: normalise *both* sides (scheme/host case, default port, no query or
+        # fragment), so equivalent spellings of the same URL agree (review finding #2).
+        htu = claims.get("htu")
+        if claims.get("htm") != method.upper() or not isinstance(htu, str):
+            raise DpopError(DpopReason.WRONG_TARGET)
+        if canonical_htu(htu) != canonical_htu(url):
             raise DpopError(DpopReason.WRONG_TARGET)
         ath = claims.get("ath")
         if not isinstance(ath, str) or not hmac.compare_digest(
@@ -321,7 +354,7 @@ class DpopVerifier:
         if not isinstance(nonce, str) or not self._nonces.valid(nonce, client_id):
             raise DpopError(DpopReason.USE_NONCE, nonce=self._nonces.issue(client_id))
         # Recorded last: a proof refused for any reason above can be corrected and resent.
-        self._replay.add(jti)
+        self._replay.add(jti, client_id)
         return VerifiedProof(jkt=jkt, jti=jti)
 
 
@@ -373,13 +406,14 @@ def authenticate_workload(
     token. Raises ``DpopError`` for DPoP failures, ``ValueError`` for missing credentials.
     """
     auth = headers.get("authorization", "")
-    scheme, _, token = auth.partition(" ")
-    if not token or scheme not in ("Bearer", "DPoP"):
+    raw_scheme, _, token = auth.partition(" ")
+    scheme = raw_scheme.lower()  # auth schemes are case-insensitive (RFC 7235 §2.1)
+    if not token or scheme not in ("bearer", "dpop"):
         raise ValueError("missing credentials")
     verified = validate(token)
     claims = verified.claims
     jkt = bound_jkt(claims)
-    if scheme == "Bearer":
+    if scheme == "bearer":
         if jkt is not None:
             raise DpopError(DpopReason.MISSING)
         if mode is DpopMode.REQUIRED:
@@ -402,12 +436,26 @@ def authenticate_workload(
 
 
 def challenge_headers(err: DpopError) -> dict[str, str]:
-    """RFC 9449 §7.1 response headers for a refused request."""
+    """RFC 9449 §7.1 response headers for a refused request. A response carrying a nonce is
+    never cacheable (§8.2, review finding #4)."""
     error = "use_dpop_nonce" if err.reason is DpopReason.USE_NONCE else "invalid_dpop_proof"
     out = {"WWW-Authenticate": f'DPoP error="{error}", algs="ES256"'}
     if err.nonce:
         out["DPoP-Nonce"] = err.nonce
+        out["Cache-Control"] = "no-store"
     return out
+
+
+def auth_challenge(guard: DpopGuard | None) -> str:
+    """``WWW-Authenticate`` for a 401 that isn't a DPoP-proof failure (missing or invalid
+    credentials). It advertises what the gateway will actually accept, with no ``error``
+    parameter (§7.1, §7.2; review finding #3): ``Bearer`` without DPoP; both while optional;
+    ``DPoP`` only when required."""
+    if guard is None:
+        return "Bearer"
+    if guard.mode is DpopMode.REQUIRED:
+        return 'DPoP algs="ES256"'
+    return 'Bearer, DPoP algs="ES256"'
 
 
 class DpopGuard:
@@ -430,6 +478,10 @@ class DpopGuard:
         self._base = public_url.rstrip("/")
         self._mode, self._verifier, self._validate = mode, verifier, validate
         self._on_unbound = on_unbound
+
+    @property
+    def mode(self) -> DpopMode:
+        return self._mode
 
     def check(self, headers: Mapping[str, str], method: str, path: str) -> dict[str, str]:
         auth = authenticate_workload(
