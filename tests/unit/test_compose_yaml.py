@@ -46,15 +46,16 @@ def test_the_check_catches_a_duplicate_merge_key() -> None:
 
 
 def test_dpop_settings_reach_exactly_the_data_plane_gateways() -> None:
-    """ADR-0028 rollout in compose: gateways optional, beta opted in, nobody else touched."""
+    """ADR-0028 end state in compose: gateways required, beta's runtime bound, nobody else touched.
+    (Alpha's compose runtime is the echo agent; the e2e harness acts as alpha, with DPoP.)"""
     d = yaml.load((ROOT / "compose.yaml").read_text(), Loader=StrictLoader)  # noqa: S506
     svc = d["services"]
     with_mode = sorted(n for n, s in svc.items() if "ATF_DPOP_MODE" in (s.get("environment") or {}))
     assert with_mode == ["a2a-gateway", "inference-gateway", "mcp-gateway"]
     for n in with_mode:
         env = svc[n]["environment"]
-        assert env["ATF_DPOP_MODE"] == "optional"
+        assert env["ATF_DPOP_MODE"] == "required"
         assert env["ATF_PUBLIC_URL"] == f"https://{n}:8443"
         assert env["ATF_BUNDLE_ISSUER"] == "atf-bundle-publisher"  # existing merges intact
     assert svc["agent-beta"]["environment"]["ATF_WORKLOAD_DPOP"] == "1"
-    assert "ATF_WORKLOAD_DPOP" not in (svc["agent-runtime"].get("environment") or {})
+    assert "ATF_WORKLOAD_TOKEN_ENDPOINT" not in (svc["agent-runtime"].get("environment") or {})

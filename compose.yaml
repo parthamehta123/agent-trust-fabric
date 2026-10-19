@@ -32,10 +32,11 @@ x-bundle-env: &bundle-env
   ATF_BUNDLE_MAX_AGE_S: "20"
   ATF_BUNDLE_REFRESH_S: "2"
 
-# DPoP at the data-plane gateways (ADR-0028). "optional" = the rollout: DPoP-bound workload tokens
-# must carry a valid proof; bearer ones are still accepted and audited (dpop.unbound_workload_token).
+# DPoP at the data-plane gateways (ADR-0028), end state: every agent's workload token is
+# DPoP-bound, so the gateways run "required" and refuse any bearer workload token.
+# (A real rollout starts at "optional", which audits bearer tokens; see the runbook.)
 x-dpop-env: &dpop-env
-  ATF_DPOP_MODE: optional
+  ATF_DPOP_MODE: required
   ATF_DPOP_NONCE_KEY_PATH: /run/config/dpop-nonce.key
 
 x-mcp-env: &mcp-env

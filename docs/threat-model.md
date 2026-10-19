@@ -125,7 +125,7 @@ Status values: `planned` · `in-progress` · `done (test: <id>)` · `accepted (A
 
 | ID | STRIDE | Threat | Mitigation | Phase | Status |
 |---|---|---|---|---|---|
-| TM-TOK-01 | S/E | A stolen bearer token (workload, T2, tool or T_B) is replayed from elsewhere within its lifetime | Today: 5-min lifetimes, strict audience per hop, internal networks, no tokens in logs (CI gate). Decided (ADR-0028): DPoP binds the workload token to an in-memory agent key, so a stolen workload+T2 pair is useless without it; stateless HMAC nonce plus per-instance `jti` cache against replay; per-profile `require_dpop` rollout. Tool hops stay bearer if Okta can't bind token-exchange output (A-12, RR-10). | 7 | **Phase 1 done** (`tests/unit/test_dpop.py`, `tests/mcp_gateway/test_dpop_app.py`, `tests/exchange/test_egress.py::TestDpopBoundWorkloadToken`, compose `tests/compose/test_dpop_e2e.py`); Phase 2 pending A-12 |
+| TM-TOK-01 | S/E | A stolen bearer token (workload, T2, tool or T_B) is replayed from elsewhere within its lifetime | Today: 5-min lifetimes, strict audience per hop, internal networks, no tokens in logs (CI gate). Decided (ADR-0028): DPoP binds the workload token to an in-memory agent key, so a stolen workload+T2 pair is useless without it; stateless HMAC nonce plus per-instance `jti` cache against replay; per-profile `require_dpop` rollout. Tool hops stay bearer if Okta can't bind token-exchange output (A-12, RR-10). | 7 | **Phase 1 done; local stack runs `required` end to end** (`tests/unit/test_dpop.py`, `tests/mcp_gateway/test_dpop_app.py`, `tests/exchange/test_egress.py::TestDpopBoundWorkloadToken`, compose `tests/compose/test_dpop_e2e.py`); Phase 2 pending A-12 |
 
 ### TB-11: Control plane
 

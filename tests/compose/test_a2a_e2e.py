@@ -96,13 +96,14 @@ def chain_works(http: httpx.Client) -> bool:  # noqa: F811
     return r.status_code == 200 and reply_text(r) == CHAIN_REPLY
 
 
-def beta_workload(http: httpx.Client) -> str:  # noqa: F811
+def beta_workload(http: httpx.Client, *, bind: bool | None = None) -> str:  # noqa: F811
     return token(
         http,
         "/oauth2/workload/v1/token",
         BETA,
         "agent-beta",
         {"grant_type": "client_credentials", "scope": "tools.invoke"},
+        bind=bind,
     )
 
 

@@ -229,3 +229,20 @@ stateless server nonce.**
   - the single-retry cap;
   - the IdP refusing bearer for a DPoP client;
   - the chain running with beta bound, and beta never audited as unbound.
+
+## Local end state (2026-10-21)
+
+The compose stack now runs the rollout's **end state**:
+- **Agents:** both agents' IdP clients require DPoP.
+- **Gateways:** the data-plane gateways run `ATF_DPOP_MODE=required`.
+- **E2E harness:** acts as a DPoP-capable agent. A transport rewrites its own bound `Bearer`
+  calls into `DPoP` calls with proofs and the nonce exchange; every other request goes out
+  exactly as written.
+
+Proven end to end:
+- neither agent can obtain an unbound workload token;
+- at all three gateways, a valid bound token stripped to `Bearer` is refused;
+- the user → alpha → beta → tool chain runs with every agent hop proven.
+
+AWS still defaults to `optional` (`var.dpop_mode`), because a real deployment starts there and
+flips per the runbook.

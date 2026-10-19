@@ -351,13 +351,18 @@ def _topology(base: str, jwks: Mapping[str, Mapping[str, str]]) -> dict[str, Any
                 FRONTEND_CLIENT_ID,
                 {f"{base}/oauth2/{AGENT}": ["agent.invoke", "tickets.read", *KB_SCOPES]},
             ),
-            client(
-                AGENT_CLIENT_ID,
-                {
-                    f"{base}/oauth2/{WORKLOAD_AS}": ["tools.invoke"],
-                    f"{base}/oauth2/{INFERENCE_AS}": ["inference.invoke"],
-                },
-            ),
+            # ADR-0028 end state: both agents' workload tokens are DPoP-bound; the gateways run
+            # "required", so a bearer workload token is refused everywhere on the data plane.
+            {
+                **client(
+                    AGENT_CLIENT_ID,
+                    {
+                        f"{base}/oauth2/{WORKLOAD_AS}": ["tools.invoke"],
+                        f"{base}/oauth2/{INFERENCE_AS}": ["inference.invoke"],
+                    },
+                ),
+                "dpop_required": True,
+            },
             client(
                 TOOL_GATEWAY_CLIENT_ID,
                 {
@@ -365,8 +370,7 @@ def _topology(base: str, jwks: Mapping[str, Mapping[str, str]]) -> dict[str, Any
                     f"{base}/oauth2/{KNOWLEDGE_AS}": list(KB_SCOPES),
                 },
             ),
-            # ADR-0028 rollout: agent-beta opts in to DPoP-bound workload tokens; alpha stays
-            # bearer, so the gateways run in "optional" mode with both kinds of agent.
+            # ADR-0028: agent-beta's workload tokens are DPoP-bound too.
             {
                 **client(AGENT_BETA_CLIENT_ID, {f"{base}/oauth2/{WORKLOAD_AS}": ["tools.invoke"]}),
                 "dpop_required": True,
