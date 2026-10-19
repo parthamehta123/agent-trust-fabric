@@ -62,3 +62,5 @@ infra/**/backend.hcl
 # OpenTofu plan files can contain sensitive values (runbook writes them locally).
 *.plan
 *.tfplan
+# Okta preflight probes: tenant config and private keys (never committed)
+.okta-preflight/

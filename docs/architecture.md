@@ -249,6 +249,9 @@ These are not yet confirmed.
   (ADR-0028, ingress).
 - A-14: Okta's DPoP nonce behaviour for client credentials (when required, lifetime) matches the
   agent implementation (ADR-0028 Phase 1).
+A-2, A-12, A-14, A-15 and A-16 can be verified before any AWS spend, against a throwaway Okta
+tenant: [Okta preflight](runbooks/okta-preflight.md).
+
 - A-15: Okta custom-authorization-server access tokens (workload, T2, tool and admin tokens) have
   no `typ` header, carry scopes as `scp` (an array) and the client as `cid`, and for a user put
   the login in `sub` and the stable user id in `uid`. Okta documents the first three; the

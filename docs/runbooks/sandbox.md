@@ -13,6 +13,8 @@ any of it automatically.
 
 ## 0. Before you start
 
+- Run the [Okta preflight](okta-preflight.md) first. It settles A-2, A-12, A-14, A-15 and A-16
+  against a throwaway tenant, so a refuted assumption costs nothing in AWS.
 - Budget: `monthly_budget_usd` (default 50) and alert emails in `terraform.tfvars`. Alerts are
   created in phase A, before anything that costs money.
 - Decide the names that must agree across stacks, and write them down once:

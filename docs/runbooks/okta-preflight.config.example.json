@@ -1,0 +1,26 @@
+{
+  "org": "https://integrator-1234567.okta.com",
+  "authorization_servers": {
+    "agent": {
+      "issuer": "https://integrator-1234567.okta.com/oauth2/ausAGENT0000000000",
+      "audience": "api://atf-agent-alpha",
+      "scope": "agent.invoke"
+    },
+    "workload": {
+      "issuer": "https://integrator-1234567.okta.com/oauth2/ausWORKLOAD00000000",
+      "audience": "api://atf-tool-gateway",
+      "scope": "tools.invoke"
+    },
+    "tool": {
+      "issuer": "https://integrator-1234567.okta.com/oauth2/ausTOOL0000000000000",
+      "audience": "api://atf-tool-tickets",
+      "scope": "tickets.read"
+    }
+  },
+  "clients": {
+    "chat": "0oaCHAT000000000000",
+    "agent": "0oaAGENT00000000000",
+    "tool_gateway": "0oaTOOLGW0000000000"
+  },
+  "redirect_port": 8765
+}
