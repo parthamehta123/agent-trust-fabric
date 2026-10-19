@@ -242,6 +242,13 @@ These are not yet confirmed.
   with `.metadata.json` attributes returned by `Retrieve`. This is A-3 in its concrete form.
 - A-11: Provider 6.66.0's `aws_kms_public_key` rejects key ids and key ARNs but accepts aliases.
   Re-check on provider upgrades, and drop the alias indirection if fixed (ADR-0026 §14).
+- A-12: Okta binds the output of token exchange (RFC 8693) and JWT-bearer (RFC 7523) grants to a
+  DPoP key (`cnf.jkt`). Documented only for client credentials; the JWT-grant variant is an IETF
+  draft (ADR-0028 Phase 2).
+- A-13: AgentCore Gateway passes a client's `DPoP` header to the interceptor unmodified
+  (ADR-0028, ingress).
+- A-14: Okta's DPoP nonce behaviour for client credentials (when required, lifetime) matches the
+  agent implementation (ADR-0028 Phase 1).
 
 [RFC 8693]: https://www.rfc-editor.org/rfc/rfc8693
 [RFC 7523]: https://www.rfc-editor.org/rfc/rfc7523
