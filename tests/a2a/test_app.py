@@ -191,6 +191,7 @@ class TestBuildApp:
             "ATF_BUNDLE_PATH": str(tmp_path / "bundle.jws"),
             "ATF_LOCAL_KEYS_DIR": str(tmp_path),
             "ATF_SSRF_ALLOW_CIDRS": "10.232.0.0/16",
+            "ATF_TRUSTED_IDP_ORIGINS": "https://idp.example.test",
         }
 
     def test_wired(self, env: dict[str, str]) -> None:

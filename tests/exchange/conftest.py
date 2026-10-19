@@ -23,8 +23,11 @@ from trustkit.exchange import (
 from trustkit.jwt import JwksKeyResolver, KeyResolver, TokenValidator, ValidationPolicy
 from trustkit.profiles import GatewayProfile, load_profiles
 from trustkit.signing import InMemoryEs256Signer, KeySigner, SigningError
+from trustkit_policy.idps import TrustedIdps
 
 BASE = "https://idp.example.test"
+TRUSTED_IDPS = TrustedIdps(frozenset({BASE}))
+"""The test IdP is the only trusted one (ADR-0027 review #1)."""
 CHAT, OTHER = "0oa-chat", "0oa-other"
 AGENT_CLIENT, AGENT_BETA_CLIENT, GATEWAY_CLIENT = (
     "0oa-agent-alpha",

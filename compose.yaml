@@ -31,6 +31,8 @@ x-bundle-env: &bundle-env
   ATF_BUNDLE_PATH: /run/bundles/bundle.jws
   ATF_BUNDLE_MAX_AGE_S: "20"
   ATF_BUNDLE_REFRESH_S: "2"
+  # Agents' T2 issuers (from the bundle) must be on this IdP, with its own keys (ADR-0027 #1).
+  ATF_TRUSTED_IDP_ORIGINS: https://mock-idp:8443
 
 # DPoP at the data-plane gateways (ADR-0028), end state: every agent's workload token is
 # DPoP-bound, so the gateways run "required" and refuse any bearer workload token.
@@ -296,6 +298,7 @@ services:
       ATF_REGISTRY_AUDIENCE: api://agent-registry
       ATF_REGISTRY_JWKS_URI: https://mock-idp:8443/oauth2/registry/v1/keys
       ATF_REGISTRY_TABLE: agents
+      ATF_TRUSTED_IDP_ORIGINS: https://mock-idp:8443
       AWS_REGION: us-east-1
       AWS_ENDPOINT_URL_DYNAMODB: http://dynamodb-local:8000
       AWS_ACCESS_KEY_ID: localdummy

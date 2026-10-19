@@ -20,6 +20,7 @@ from hypothesis import strategies as st
 from tests.exchange.conftest import (
     ALICE,
     CHAT,
+    TRUSTED_IDPS,
     World,
     egress_bundle,
     egress_doc,
@@ -127,6 +128,7 @@ def build(world: World, **overrides: Any) -> Harness:
         "now": world.clock,
         "monotonic": mono,
         "policy": lambda: egress_bundle(),
+        "trusted_idps": TRUSTED_IDPS,
     }
     args.update(overrides)
     deps = InterceptorDeps(**args)

@@ -66,6 +66,7 @@ from trustkit.scanning import (
     scan_with_policy,
 )
 from trustkit_policy.bundle import LoadedBundle
+from trustkit_policy.idps import TrustedIdps
 from trustkit_policy.runtime import actor_policies_from_bundle, authorize_tool, user_scopes
 
 RESERVED_HEADERS: Final = tuple(sorted(policy.RESERVED_HEADERS))
@@ -107,6 +108,8 @@ class InterceptorDeps:
     denies."""
     policy: Callable[[], LoadedBundle | None] = lambda: None
     """Current verified policy bundle (ADR-0022). ``None`` = no fresh bundle: egress denies."""
+    trusted_idps: TrustedIdps | None = None
+    """IdPs an agent's T2 may come from (ADR-0027 review #1). ``None``: egress denies."""
 
 
 Handler = Callable[[Mapping[str, Any], Any], dict[str, Any]]
@@ -353,7 +356,7 @@ def _decide_egress_request(
 
     loaded = deps.policy()
     server_id = profile.server_id
-    if loaded is None or server_id is None:
+    if loaded is None or server_id is None or deps.trusted_idps is None:
         raise _Deny(503, "policy_unavailable")  # no fresh bundle: fail closed (ADR-0022 §6)
     target_scopes = profile.target.scopes
     agents = actor_policies_from_bundle(
@@ -361,6 +364,7 @@ def _decide_egress_request(
         deps.jwks,
         scopes_for=lambda g: g.tools.get(server_id, frozenset()) & target_scopes,
         now=deps.now,
+        trusted_idps=deps.trusted_idps,
     )
     try:
         binding = bind_actor(

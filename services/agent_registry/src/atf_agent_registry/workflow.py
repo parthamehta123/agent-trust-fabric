@@ -33,6 +33,7 @@ from atf_agent_registry.records import (
 from trustkit.audit import AuditEvent, AuditSink, Decision
 from trustkit.jwt import TokenValidationError, TokenValidator
 from trustkit.profiles import ScannerFailureMode
+from trustkit_policy.idps import TrustedIdps
 
 REGISTRY_SCOPE: Final = "registry.admin"
 APPROVERS_GROUP: Final = "atf-registry-approvers"
@@ -103,13 +104,24 @@ def eligible_roles(who: Principal, owner_team: str) -> frozenset[ApprovalRole]:
     return frozenset(roles)
 
 
-def _check_spec(agent_id: str, spec: AgentSpec) -> str | None:
-    """Tier and self-reference rules the schema alone can't express. Returns a reason or None."""
+def _check_spec(agent_id: str, spec: AgentSpec, trusted_idps: TrustedIdps) -> str | None:
+    """Tier, self-reference and IdP rules the schema alone can't express. Returns a reason or
+    None."""
+    if (reason := _untrusted_idp(spec, trusted_idps)) is not None:
+        return reason
     if spec.tier is not Tier.STANDARD and spec.scanner_failure_mode is ScannerFailureMode.OPEN:
         return "fail-open not allowed above standard tier"
     d = spec.delegation
     if agent_id in d.may_delegate_to or agent_id in d.accepts_delegation_from:
         return "an agent cannot delegate to itself"
+    return None
+
+
+def _untrusted_idp(spec: AgentSpec, trusted_idps: TrustedIdps) -> str | None:
+    """ADR-0027 review #1: a T2 issuer on an IdP the deployment trusts, with that issuer's keys."""
+    b = spec.ingress
+    if b is not None and not trusted_idps.allows(b.t2_issuer, b.t2_jwks_uri):
+        return "T2 issuer or JWKS not on a trusted IdP"
     return None
 
 
@@ -119,9 +131,11 @@ class RegistryService:
         store: RegistryStore,
         audit: AuditSink,
         *,
+        trusted_idps: TrustedIdps,
         now: Callable[[], dt.datetime] = lambda: dt.datetime.now(dt.UTC),
     ) -> None:
         self._store, self._audit, self._now = store, audit, now
+        self._trusted_idps = trusted_idps
 
     # ------------------------------------------------------------------ commands
 
@@ -131,7 +145,7 @@ class RegistryService:
             self._deny(ev, who, agent_id, None, Failure.INVALID, "agent_id")
         if not who.in_team(spec.owner_team):
             self._deny(ev, who, agent_id, None, Failure.FORBIDDEN, "not in owner team")
-        if (reason := _check_spec(agent_id, spec)) is not None:
+        if (reason := _check_spec(agent_id, spec, self._trusted_idps)) is not None:
             self._deny(ev, who, agent_id, None, Failure.INVALID, reason)
         versions = self._versions(agent_id)
         current_team = self._current_team(versions)
@@ -163,7 +177,7 @@ class RegistryService:
             self._deny(ev, who, agent_id, version, Failure.CONFLICT, "not a draft")
         if spec.owner_team != v.spec.owner_team:
             self._deny(ev, who, agent_id, version, Failure.FORBIDDEN, "owner team change")
-        if (reason := _check_spec(agent_id, spec)) is not None:
+        if (reason := _check_spec(agent_id, spec, self._trusted_idps)) is not None:
             self._deny(ev, who, agent_id, version, Failure.INVALID, reason)
         new = self._next(v, spec=spec)
         self._commit(ev, who, new, lambda: self._store.replace(new, expected=v))
@@ -187,6 +201,8 @@ class RegistryService:
         v = self._load(ev, who, agent_id, version)
         if v.state is not State.IN_REVIEW:
             self._deny(ev, who, agent_id, version, Failure.CONFLICT, "not in review")
+        if (reason := _untrusted_idp(v.spec, self._trusted_idps)) is not None:
+            self._deny(ev, who, agent_id, version, Failure.INVALID, reason)  # drafted before #1
         if who.subject == v.author or any(a.subject == who.subject for a in v.approvals):
             self._deny(ev, who, agent_id, version, Failure.SAME_PERSON, role.value)
         versions = self._versions(agent_id)
@@ -229,6 +245,8 @@ class RegistryService:
         v = self._load(ev, who, agent_id, version)
         if v.state is not State.IN_REVIEW:
             self._deny(ev, who, agent_id, version, Failure.CONFLICT, "not in review")
+        if (reason := _untrusted_idp(v.spec, self._trusted_idps)) is not None:
+            self._deny(ev, who, agent_id, version, Failure.INVALID, reason)  # drafted before #1
         if who.subject == v.author:
             self._deny(ev, who, agent_id, version, Failure.SAME_PERSON, "author")
         prev = self._approved(self._versions(agent_id))

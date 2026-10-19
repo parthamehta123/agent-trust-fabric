@@ -213,6 +213,7 @@ def build_app(env: Mapping[str, str]) -> FastAPI:
     from trustkit_aws.signers import make_signer_factory
     from trustkit_http.endpoint import HttpxTokenEndpoint
     from trustkit_http.ssrf import PinnedClient, parse_internal_hosts, parse_local_allowlist
+    from trustkit_policy.idps import TrustedIdps
     from trustkit_policy.runtime import actor_policies_from_bundle, policy_from_env
 
     egress = json.loads(load_document(env, "ATF_A2A_EGRESS_PROFILE"))
@@ -229,6 +230,7 @@ def build_app(env: Mapping[str, str]) -> FastAPI:
             resolvers[uri] = JwksKeyResolver(fetch=lambda: http.get_json(uri))
         return resolvers[uri]
 
+    trusted_idps = TrustedIdps.from_env(env)  # ADR-0027 review #1: T2 issuers must be on these
     ei = EgressInbound.model_validate_json(json.dumps(egress["egress_inbound"]))
     workload_v = TokenValidator(
         ValidationPolicy(issuer=ei.issuer, audiences=ei.audiences, expected_typ="at+jwt"),
@@ -246,7 +248,10 @@ def build_app(env: Mapping[str, str]) -> FastAPI:
         scanner=LocalRulesScanner(),
         audit=audit,
         config=BrokerConfig(
-            gateway_base_url=public_url, egress_base=egress, target_scopes=target_scopes
+            gateway_base_url=public_url,
+            egress_base=egress,
+            target_scopes=target_scopes,
+            trusted_idps=trusted_idps,
         ),
         now=now,
     )
@@ -264,6 +269,7 @@ def build_app(env: Mapping[str, str]) -> FastAPI:
             # Only agents that may delegate at all can call A2A.
             scopes_for=lambda g: target_scopes if g.delegation.may_delegate_to else frozenset(),
             now=now,
+            trusted_idps=trusted_idps,
         )
         # max_prior_actors=0: the caller must be the first actor, so a chain stays <= 2.
         return bind_actor(

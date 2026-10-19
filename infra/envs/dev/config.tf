@@ -93,7 +93,11 @@ locals {
     ATF_BUNDLE_PUBLIC_KEY_PEM = data.aws_kms_public_key.bundle.public_key_pem
     ATF_BUNDLE_S3_BUCKET      = module.bundles.bucket_name
     ATF_BUNDLE_S3_KEY         = "bundle.jws"
+    ATF_TRUSTED_IDP_ORIGINS   = local.idp_origin
   }
+  # Agents' T2 issuers (registry specs, then the bundle) must be on this IdP (ADR-0027 #1).
+  idp_origin = regex("^https://[^/]+", var.idp.base_url)
+
   bundle_issuer = "${local.name}-bundle-publisher"
   table_names   = module.tables.table_names
 
@@ -126,10 +130,11 @@ locals {
       ATF_SSRF_INTERNAL_HOSTS     = jsonencode(var.a2a_internal_hosts)
     })
     "agent-registry" = {
-      ATF_REGISTRY_ISSUER   = local.as_urls["registry"].issuer
-      ATF_REGISTRY_AUDIENCE = local.as_urls["registry"].audience
-      ATF_REGISTRY_JWKS_URI = local.as_urls["registry"].jwks_uri
-      ATF_REGISTRY_TABLE    = local.table_names["agents"]
+      ATF_REGISTRY_ISSUER     = local.as_urls["registry"].issuer
+      ATF_REGISTRY_AUDIENCE   = local.as_urls["registry"].audience
+      ATF_REGISTRY_JWKS_URI   = local.as_urls["registry"].jwks_uri
+      ATF_REGISTRY_TABLE      = local.table_names["agents"]
+      ATF_TRUSTED_IDP_ORIGINS = local.idp_origin
     }
     "bundle-publisher" = {
       ATF_REGISTRY_TABLE     = local.table_names["agents"]
