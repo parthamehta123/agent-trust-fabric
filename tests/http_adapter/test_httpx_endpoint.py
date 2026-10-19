@@ -222,3 +222,24 @@ class TestJwksMediaType:
             200, content=b'{"a": 1}', headers={"content-type": "application/jwk-set+json"}
         )
         assert endpoint(lambda req: resp).post_form(URL, {}).body == {}
+
+
+class TestTransportErrorMaybeSent:
+    """Token-exchange review #4: only a connect failure proves the request never left."""
+
+    @pytest.mark.parametrize(
+        ("exc", "maybe_sent"),
+        [
+            (httpx.ConnectError("x"), False),
+            (httpx.ConnectTimeout("x"), False),
+            (httpx.ReadTimeout("x"), True),
+            (httpx.RemoteProtocolError("x"), True),
+        ],
+    )
+    def test_maybe_sent(self, exc: Exception, maybe_sent: bool) -> None:
+        def handler(req: httpx.Request) -> httpx.Response:
+            raise exc
+
+        with pytest.raises(TransportError) as e:
+            endpoint(handler).post_form(URL, {})
+        assert e.value.maybe_sent is maybe_sent

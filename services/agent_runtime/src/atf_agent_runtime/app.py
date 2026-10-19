@@ -20,7 +20,7 @@ from starlette.concurrency import run_in_threadpool
 from atf_agent_runtime.runtime import AgentRuntime
 from trustkit.config import ca_bundle
 from trustkit.dpop import DpopKey, dpop_post
-from trustkit.jwt import JwksKeyResolver
+from trustkit.jwt import JwksKeyResolver, access_token_profile_from_env
 from trustkit.resource import Principal, ResourceAuthorizer
 from trustkit_http.endpoint import HttpxTokenEndpoint
 
@@ -195,7 +195,11 @@ def build_runtime_from_env(env: Mapping[str, str]) -> AgentRuntime:
         )
     return AgentRuntime(
         authorizer=ResourceAuthorizer(
-            issuer=issuer, audience=audience, keys=keys, accept_actor=accept_actor
+            issuer=issuer,
+            audience=audience,
+            keys=keys,
+            accept_actor=accept_actor,
+            access_token_profile=access_token_profile_from_env(env),
         ),
         agent=agent,
     )

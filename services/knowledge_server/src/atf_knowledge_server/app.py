@@ -181,7 +181,7 @@ def build_app(env: Mapping[str, str]) -> FastAPI:
 
     from atf_knowledge_server.store import LocalVectorStore, VectorStore
     from trustkit.audit import JsonLinesSink
-    from trustkit.jwt import JwksKeyResolver, ValidationPolicy
+    from trustkit.jwt import JwksKeyResolver, ValidationPolicy, access_token_profile_from_env
     from trustkit.scanning import LocalRulesScanner
     from trustkit_aws.s3_bundles import s3_source_factory
     from trustkit_http.endpoint import HttpxTokenEndpoint
@@ -195,7 +195,12 @@ def build_app(env: Mapping[str, str]) -> FastAPI:
     region = env.get("AWS_REGION", "us-east-1")
     http = HttpxTokenEndpoint(ca_bundle_path=ca_bundle(env))
     validator = TokenValidator(
-        ValidationPolicy(issuer=issuer, audiences=frozenset({audience}), expected_typ="at+jwt"),
+        ValidationPolicy(
+            issuer=issuer,
+            audiences=frozenset({audience}),
+            expected_typ="at+jwt",
+            access_token_profile=access_token_profile_from_env(env),
+        ),
         JwksKeyResolver(fetch=lambda: http.get_json(jwks_uri)),
     )
     index, kb_id = env.get("ATF_KB_INDEX_PATH"), env.get("ATF_KB_BEDROCK_ID")

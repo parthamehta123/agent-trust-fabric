@@ -206,7 +206,13 @@ def build_app(env: Mapping[str, str]) -> FastAPI:
     from trustkit.binding import bind_actor
     from trustkit.breaker import BreakerRegistry
     from trustkit.exchange import IdJagExchanger
-    from trustkit.jwt import JwksKeyResolver, KeyResolver, TokenValidator, ValidationPolicy
+    from trustkit.jwt import (
+        JwksKeyResolver,
+        KeyResolver,
+        TokenValidator,
+        ValidationPolicy,
+        access_token_profile_from_env,
+    )
     from trustkit.profiles import EgressInbound
     from trustkit.scanning import LocalRulesScanner
     from trustkit_aws.s3_bundles import s3_source_factory
@@ -231,9 +237,15 @@ def build_app(env: Mapping[str, str]) -> FastAPI:
         return resolvers[uri]
 
     trusted_idps = TrustedIdps.from_env(env)  # ADR-0027 review #1: T2 issuers must be on these
+    atp = access_token_profile_from_env(env)  # A-15: the IdP's access-token shape
     ei = EgressInbound.model_validate_json(json.dumps(egress["egress_inbound"]))
     workload_v = TokenValidator(
-        ValidationPolicy(issuer=ei.issuer, audiences=ei.audiences, expected_typ="at+jwt"),
+        ValidationPolicy(
+            issuer=ei.issuer,
+            audiences=ei.audiences,
+            expected_typ="at+jwt",
+            access_token_profile=atp,
+        ),
         jwks(ei.jwks_uri),
     )
     audit = JsonLinesSink(sys.stdout)
@@ -242,7 +254,11 @@ def build_app(env: Mapping[str, str]) -> FastAPI:
     broker = A2ABroker(
         policy=policy,
         exchanger=IdJagExchanger(
-            http=http, signers=make_signer_factory(env), jwks=jwks, breakers=BreakerRegistry()
+            http=http,
+            signers=make_signer_factory(env),
+            jwks=jwks,
+            breakers=BreakerRegistry(),
+            access_token_profile=atp,
         ),
         upstream=PinnedClient(ca_bundle_path=ca, allow=allow, internal_hosts=internal),
         scanner=LocalRulesScanner(),
@@ -270,6 +286,7 @@ def build_app(env: Mapping[str, str]) -> FastAPI:
             scopes_for=lambda g: target_scopes if g.delegation.may_delegate_to else frozenset(),
             now=now,
             trusted_idps=trusted_idps,
+            access_token_profile=atp,
         )
         # max_prior_actors=0: the caller must be the first actor, so a chain stays <= 2.
         return bind_actor(

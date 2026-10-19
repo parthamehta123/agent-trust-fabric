@@ -130,6 +130,8 @@ Then work through the checklist below, ticking each row in `docs/emulator-diverg
 | A-5: can an interceptor remove a client header? | manual: send an `x-atf-decision` header from the client, observe what the runtime receives | manual |
 | A-6: gateway behaviour on interceptor error or timeout | manual: point a scratch gateway at a Lambda that sleeps past its timeout | manual |
 | A-7: runtime inbound JWT authorizer pinned to the resource AS | manual (AgentCore Runtime config) | manual |
+| A-15: Okta access-token shape (no `typ`; `scp`, `cid`, `uid`; `uid` equals the ID token's `sub`) | decode one token of each kind (workload, T2, tool, admin) and run it through the `okta` validators; a smoke call end to end | manual |
+| A-16: Okta token exchange accepts `actor_token` and emits `act` | one delegated tool call; inspect the tool token's `act` | manual |
 | ED-1/ED-2/ED-4: KMS semantics | automated (ED-4); ED-1 and ED-2 exercised by every signer at runtime | `test_pins_and_audit.py` |
 | ED-10: real ApplyGuardrail findings | smoke calls with a prompt-attack string and a PEM header through the inference gateway | manual |
 | ED-11: Bedrock through LiteLLM | a smoke completion through the inference gateway | manual |

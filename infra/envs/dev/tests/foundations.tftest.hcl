@@ -505,6 +505,17 @@ run "trusted_idp_origin_reaches_registry_and_bundle_readers" {
   }
 }
 
+run "every_validator_expects_okta_shaped_access_tokens" {
+  command = plan
+  assert {
+    condition = alltrue(concat(
+      [for svc, env in output.service_environment : env["ATF_ACCESS_TOKEN_PROFILE"] == "okta"],
+      [output.interceptor_environment["ATF_ACCESS_TOKEN_PROFILE"] == "okta"],
+    ))
+    error_message = "A-15: every service and the interceptor validate Okta-shaped access tokens."
+  }
+}
+
 # ------------------------------------------------------------------ ADR-0028: DPoP
 
 run "dpop_nonce_key_reaches_exactly_the_data_plane_gateways" {

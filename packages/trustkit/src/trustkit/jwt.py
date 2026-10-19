@@ -60,6 +60,28 @@ _ALG_KEY_TYPE: Final[Mapping[str, type[RSAKey] | type[ECKey]]] = MappingProxyTyp
 _ALG_EC_CURVE: Final[Mapping[str, str]] = MappingProxyType({"ES256": "P-256"})
 
 
+class AccessTokenProfile(StrEnum):
+    """How an IdP shapes its access tokens (ADR-0027 token-exchange review, finding #1; A-15).
+
+    * ``rfc9068``: ``typ: at+jwt``, ``scope`` (space-separated string), ``client_id``.
+    * ``okta``: Okta custom authorization servers: no ``typ`` header, ``scp`` (array), ``cid``,
+      and for user tokens ``sub`` = the login with the stable user id in ``uid``. Normalised on
+      validation to ``scope``/``client_id``/``sub = uid``, so every consumer sees one shape.
+    """
+
+    RFC9068 = "rfc9068"
+    OKTA = "okta"
+
+
+ACCESS_TOKEN_PROFILE_ENV: Final = "ATF_ACCESS_TOKEN_PROFILE"  # noqa: S105 - env var name
+
+
+def access_token_profile_from_env(env: Mapping[str, str]) -> AccessTokenProfile:
+    """``ATF_ACCESS_TOKEN_PROFILE`` (default ``rfc9068``). Anything else raises: a typo must be a
+    cold-start failure, not a silent fallback."""
+    return AccessTokenProfile(env.get(ACCESS_TOKEN_PROFILE_ENV, AccessTokenProfile.RFC9068.value))
+
+
 class Reason(StrEnum):
     TOO_LARGE = "too_large"
     MALFORMED = "malformed"
@@ -98,6 +120,9 @@ class ValidationPolicy:
     """e.g. ``"at+jwt"`` (RFC 9068) or ``"oauth-id-jag+jwt"``; compared case-insensitively."""
     leeway_seconds: int = 60
     max_token_bytes: int = 16_384
+    access_token_profile: AccessTokenProfile = AccessTokenProfile.RFC9068
+    """``okta``: also accept an access token *without* ``typ`` where ``at+jwt`` is expected (any
+    other ``typ`` is still refused), and normalise Okta's claims. See ``AccessTokenProfile``."""
 
     def __post_init__(self) -> None:
         """Reject unsafe policies at construction time, not at first request."""
@@ -310,6 +335,38 @@ def _media_type(typ: str) -> str:
     return t if "/" in t else f"application/{t}"
 
 
+_AT_JWT: Final = "application/at+jwt"
+
+
+def _normalise_okta(c: dict[str, Any]) -> dict[str, Any]:
+    """Okta claim names -> the ones every consumer reads. An Okta and a standard claim that are
+    both present must agree, or the token is ambiguous (``MALFORMED``)."""
+    out = dict(c)
+    pairs: list[tuple[str, str, Any]] = []
+    if "scp" in c:
+        scp = c["scp"]
+        if not isinstance(scp, list) or not all(isinstance(x, str) and x for x in scp):
+            raise TokenValidationError(Reason.MALFORMED, "scp must be a list of strings")
+        pairs.append(("scp", "scope", " ".join(scp)))
+    if "cid" in c:
+        if not isinstance(c["cid"], str) or not c["cid"]:
+            raise TokenValidationError(Reason.MALFORMED, "cid must be a string")
+        pairs.append(("cid", "client_id", c["cid"]))
+    if "uid" in c:  # a user's token: sub is their login, uid the stable id the ID token uses
+        if not isinstance(c["uid"], str) or not c["uid"]:
+            raise TokenValidationError(Reason.MALFORMED, "uid must be a string")
+        out["sub"] = c["uid"]
+    for okta_name, std_name, value in pairs:
+        if std_name in c and (
+            set(str(c[std_name]).split()) != set(value.split())
+            if std_name == "scope"
+            else c[std_name] != value
+        ):
+            raise TokenValidationError(Reason.MALFORMED, f"{okta_name} and {std_name} disagree")
+        out[std_name] = value
+    return out
+
+
 def _is_int(v: Any) -> bool:
     return isinstance(v, int) and not isinstance(v, bool)
 
@@ -351,7 +408,14 @@ class TokenValidator:
 
         if p.expected_typ is not None:
             typ = header.get("typ")
-            if not isinstance(typ, str) or _media_type(typ) != _media_type(p.expected_typ):
+            typless_okta = (
+                typ is None
+                and p.access_token_profile is AccessTokenProfile.OKTA
+                and _media_type(p.expected_typ) == _AT_JWT
+            )
+            if not typless_okta and (
+                not isinstance(typ, str) or _media_type(typ) != _media_type(p.expected_typ)
+            ):
                 raise TokenValidationError(Reason.WRONG_TYP)
 
         kid = header.get("kid")
@@ -381,6 +445,8 @@ class TokenValidator:
         claims = verified.claims
         if not isinstance(claims, dict):
             raise TokenValidationError(Reason.MALFORMED, "claims is not an object")
+        if p.access_token_profile is AccessTokenProfile.OKTA:
+            claims = _normalise_okta(claims)
         self._check_claims(claims)
         return VerifiedToken(
             header=MappingProxyType(dict(header)), claims=MappingProxyType(dict(claims))

@@ -25,9 +25,11 @@ from mock_idp.core import AuthorizationServer, ClientRegistration, MockIdp
 _NO_STORE = {"Cache-Control": "no-store", "Pragma": "no-cache"}  # RFC 6749 §5.1
 
 
-def build_idp_from_topology(topology: Mapping[str, Any], *, base_url: str) -> MockIdp:
+def build_idp_from_topology(
+    topology: Mapping[str, Any], *, base_url: str, claim_shape: str = "rfc9068"
+) -> MockIdp:
     """Topology JSON (from devstack.bootstrap) -> configured MockIdp."""
-    idp = MockIdp(base_url)
+    idp = MockIdp(base_url, claim_shape=claim_shape)
     for srv in topology["authorization_servers"]:
         idp.add_authorization_server(
             AuthorizationServer(
@@ -130,4 +132,9 @@ def app_from_env() -> FastAPI:
     """uvicorn --factory entrypoint: ATF_ENV, ATF_IDP_BASE_URL, ATF_TOPOLOGY_PATH."""
     env = dict(os.environ)
     topology = json.loads(pathlib.Path(env["ATF_TOPOLOGY_PATH"]).read_text())
-    return create_app(build_idp_from_topology(topology, base_url=env["ATF_IDP_BASE_URL"]), env=env)
+    idp = build_idp_from_topology(
+        topology,
+        base_url=env["ATF_IDP_BASE_URL"],
+        claim_shape=env.get("ATF_MOCK_IDP_CLAIM_SHAPE", "rfc9068"),  # A-15: "okta" in compose
+    )
+    return create_app(idp, env=env)

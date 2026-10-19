@@ -67,6 +67,7 @@ services:
     build: { context: ., dockerfile: deploy/local/service.Dockerfile, args: { SERVICE: mock-idp } }
     command: ["mock_idp.app:app_from_env"]
     environment:
+      ATF_MOCK_IDP_CLAIM_SHAPE: okta  # A-15: issue access tokens the way Okta does
       ATF_ENV: local
       ATF_IDP_BASE_URL: https://mock-idp:8443
       ATF_TOPOLOGY_PATH: /run/config/mock-idp-topology.json
@@ -83,6 +84,7 @@ services:
     <<: *hardening
     build: { context: ., dockerfile: deploy/local/interceptor.Dockerfile }
     environment:
+      ATF_ACCESS_TOKEN_PROFILE: okta  # A-15: validate Okta-shaped access tokens
       ATF_ENV: local
       ATF_PROFILES_PATH: /run/config/profiles.json
       ATF_CA_BUNDLE: /run/certs/ca.pem
@@ -100,6 +102,7 @@ services:
     build: { context: ., dockerfile: deploy/local/service.Dockerfile, args: { SERVICE: atf-agent-runtime } }
     command: ["atf_agent_runtime.app:app_from_env"]
     environment:
+      ATF_ACCESS_TOKEN_PROFILE: okta  # A-15: validate Okta-shaped access tokens
       ATF_RESOURCE_ISSUER: https://mock-idp:8443/oauth2/agent-alpha
       ATF_RESOURCE_AUDIENCE: api://agent-alpha
       ATF_RESOURCE_JWKS_URI: https://mock-idp:8443/oauth2/agent-alpha/v1/keys
@@ -162,6 +165,7 @@ services:
     build: { context: ., dockerfile: deploy/local/service.Dockerfile, args: { SERVICE: mock-mcp } }
     command: ["mock_mcp.app:app_from_env"]
     environment:
+      ATF_ACCESS_TOKEN_PROFILE: okta  # A-15: validate Okta-shaped access tokens
       ATF_ENV: local
       ATF_TOOL_ISSUER: https://mock-idp:8443/oauth2/tool-tickets
       ATF_TOOL_AUDIENCE: api://tool-tickets
@@ -185,6 +189,7 @@ services:
     command: ["atf_mcp_gateway.app:data_app_from_env"]
     environment:
       <<: [*mcp-env, *bundle-env, *dpop-env]
+      ATF_ACCESS_TOKEN_PROFILE: okta  # A-15: validate Okta-shaped access tokens
       ATF_PUBLIC_URL: https://mcp-gateway:8443
     volumes:
       - ./.local-ca/ca.pem:/run/certs/ca.pem:ro
@@ -210,6 +215,7 @@ services:
     command: ["atf_mcp_gateway.app:admin_app_from_env"]
     environment:
       <<: *mcp-env
+      ATF_ACCESS_TOKEN_PROFILE: okta  # A-15: validate Okta-shaped access tokens
       ATF_SSRF_ALLOW_CIDRS: 10.231.0.0/16
       ATF_ADMIN_ISSUER: https://mock-idp:8443/oauth2/admin
       ATF_ADMIN_AUDIENCE: api://mcp-admin
@@ -252,6 +258,7 @@ services:
     build: { context: ., dockerfile: deploy/local/service.Dockerfile, args: { SERVICE: atf-inference-gateway } }
     command: ["atf_inference_gateway.app:app_from_env"]
     environment:
+      ATF_ACCESS_TOKEN_PROFILE: okta  # A-15: validate Okta-shaped access tokens
       ATF_PUBLIC_URL: https://inference-gateway:8443
       ATF_ENV: local
       ATF_CA_BUNDLE: /run/certs/ca.pem
@@ -292,6 +299,7 @@ services:
     build: { context: ., dockerfile: deploy/local/service.Dockerfile, args: { SERVICE: atf-agent-registry } }
     command: ["atf_agent_registry.app:app_from_env"]
     environment:
+      ATF_ACCESS_TOKEN_PROFILE: okta  # A-15: validate Okta-shaped access tokens
       ATF_ENV: local
       ATF_CA_BUNDLE: /run/certs/ca.pem
       ATF_REGISTRY_ISSUER: https://mock-idp:8443/oauth2/registry
@@ -358,6 +366,7 @@ services:
     command: ["atf_agent_runtime.app:app_from_env"]
     environment:
       <<: *bundle-env
+      ATF_ACCESS_TOKEN_PROFILE: okta  # A-15: validate Okta-shaped access tokens
       ATF_ENV: local
       ATF_RESOURCE_ISSUER: https://mock-idp:8443/oauth2/agent-beta
       ATF_RESOURCE_AUDIENCE: api://agent-beta
@@ -394,6 +403,7 @@ services:
     command: ["atf_a2a_gateway.app:app_from_env"]
     environment:
       <<: [*bundle-env, *dpop-env]
+      ATF_ACCESS_TOKEN_PROFILE: okta  # A-15: validate Okta-shaped access tokens
       ATF_PUBLIC_URL: https://a2a-gateway:8443
       ATF_ENV: local
       ATF_A2A_EGRESS_PROFILE_PATH: /run/config/a2a-egress.json
@@ -429,6 +439,7 @@ services:
     command: ["atf_knowledge_server.app:app_from_env"]
     environment:
       <<: *bundle-env
+      ATF_ACCESS_TOKEN_PROFILE: okta  # A-15: validate Okta-shaped access tokens
       ATF_KB_ISSUER: https://mock-idp:8443/oauth2/knowledge
       ATF_KB_AUDIENCE: api://knowledge
       ATF_KB_JWKS_URI: https://mock-idp:8443/oauth2/knowledge/v1/keys

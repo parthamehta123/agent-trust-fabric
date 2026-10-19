@@ -95,7 +95,8 @@ def _demo(http: httpx.Client) -> None:
         "Client credentials with a DPoP proof: the IdP challenged for a nonce, then issued a token "
         "bound to the thumbprint of alpha's key.",
     )
-    say(f"    sub={c['sub']}  aud={c['aud']}  scope={c.get('scope') or c.get('scp')}")
+    scope = c.get("scope") or " ".join(c.get("scp", []))  # RFC 9068 or Okta shape (A-15)
+    say(f"    sub={c['sub']}  aud={c['aud']}  scope={scope}")
     say(f"    expires in {int(c['exp'] - time.time())} s   cnf.jkt={c['cnf']['jkt']}")
     assert c["cnf"] == {"jkt": key.jkt}
 

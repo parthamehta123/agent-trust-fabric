@@ -113,7 +113,7 @@ def build_app(env: Mapping[str, str]) -> FastAPI:
     from atf_inference_gateway.policy import load_inference_profile
     from atf_inference_gateway.routes import load_routes, routed
     from trustkit.audit import JsonLinesSink
-    from trustkit.jwt import JwksKeyResolver, ValidationPolicy
+    from trustkit.jwt import JwksKeyResolver, ValidationPolicy, access_token_profile_from_env
     from trustkit.scanning import ContentScanner, LocalRulesScanner
     from trustkit_aws.s3_bundles import s3_source_factory
     from trustkit_http.endpoint import HttpxTokenEndpoint
@@ -133,6 +133,7 @@ def build_app(env: Mapping[str, str]) -> FastAPI:
             issuer=profile.inbound.issuer,
             audiences=frozenset(profile.inbound.audiences),
             expected_typ="at+jwt",
+            access_token_profile=access_token_profile_from_env(env),
         ),
         JwksKeyResolver(fetch=lambda: http.get_json(jwks_uri)),
     )

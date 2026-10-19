@@ -162,7 +162,7 @@ def build_app(env: Mapping[str, str]) -> FastAPI:
 
     from atf_agent_registry.store_dynamo import DynamoRegistryStore, ensure_local_table
     from trustkit.audit import JsonLinesSink
-    from trustkit.jwt import JwksKeyResolver, ValidationPolicy
+    from trustkit.jwt import JwksKeyResolver, ValidationPolicy, access_token_profile_from_env
     from trustkit_http.endpoint import HttpxTokenEndpoint
     from trustkit_policy.idps import TrustedIdps
 
@@ -172,7 +172,12 @@ def build_app(env: Mapping[str, str]) -> FastAPI:
 
     http = HttpxTokenEndpoint(ca_bundle_path=ca)
     validator = TokenValidator(
-        ValidationPolicy(issuer=issuer, audiences=frozenset({audience}), expected_typ="at+jwt"),
+        ValidationPolicy(
+            issuer=issuer,
+            audiences=frozenset({audience}),
+            expected_typ="at+jwt",
+            access_token_profile=access_token_profile_from_env(env),
+        ),
         JwksKeyResolver(fetch=lambda: http.get_json(jwks_uri)),
     )
     ddb = boto3.client("dynamodb", region_name=region)

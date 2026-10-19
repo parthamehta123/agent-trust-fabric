@@ -20,7 +20,13 @@ from trustkit.exchange import (
     IdJagExchanger,
     TransportError,
 )
-from trustkit.jwt import JwksKeyResolver, KeyResolver, TokenValidator, ValidationPolicy
+from trustkit.jwt import (
+    AccessTokenProfile,
+    JwksKeyResolver,
+    KeyResolver,
+    TokenValidator,
+    ValidationPolicy,
+)
 from trustkit.profiles import GatewayProfile, load_profiles
 from trustkit.signing import InMemoryEs256Signer, KeySigner, SigningError
 from trustkit_policy.idps import TrustedIdps
@@ -55,6 +61,8 @@ class RecordingEndpoint:
     calls: list[tuple[str, dict[str, str]]] = field(default_factory=list)
     dpop_headers: list[str | None] = field(default_factory=list)
     transport_failures: int = 0
+    transport_maybe_sent: bool = True
+    """``False``: simulated failures are connect errors (the request never left)."""
     rewrite_request: Callable[[str, dict[str, str]], dict[str, str]] | None = None
     rewrite_response: Callable[[str, HttpResult], HttpResult] | None = None
 
@@ -66,7 +74,7 @@ class RecordingEndpoint:
         self.dpop_headers.append((headers or {}).get("DPoP"))
         if self.transport_failures > 0:
             self.transport_failures -= 1
-            raise TransportError("simulated")
+            raise TransportError("simulated", maybe_sent=self.transport_maybe_sent)
         if self.rewrite_request:
             f = self.rewrite_request(url, f)
         r = self.idp.token(url, f, dpop=(headers or {}).get("DPoP"))
@@ -176,8 +184,22 @@ class World:
 
 @pytest.fixture
 def world() -> World:
+    return make_world()
+
+
+@pytest.fixture
+def okta_world() -> World:
+    """The same world with Okta-shaped access tokens and Okta-profile validators (A-15)."""
+    return make_world(claim_shape="okta", access_token_profile=AccessTokenProfile.OKTA)
+
+
+def make_world(
+    *,
+    claim_shape: str = "rfc9068",
+    access_token_profile: AccessTokenProfile = AccessTokenProfile.RFC9068,
+) -> World:
     clock = Clock()
-    idp = MockIdp(BASE, now=clock)
+    idp = MockIdp(BASE, now=clock, claim_shape=claim_shape)
     idp.add_authorization_server(
         AuthorizationServer("ingress", "api://agent-ingress", frozenset({CHAT, OTHER}))
     )
@@ -264,10 +286,19 @@ def world() -> World:
 
     endpoint = RecordingEndpoint(idp)
     cache: TokenCache[ExchangeResult] = TokenCache(now=clock)
-    exchanger = IdJagExchanger(http=endpoint, signers=signer_for, jwks=jwks, cache=cache, now=clock)
+    exchanger = IdJagExchanger(
+        http=endpoint,
+        signers=signer_for,
+        jwks=jwks,
+        cache=cache,
+        now=clock,
+        access_token_profile=access_token_profile,
+    )
     at_v = TokenValidator(
         ValidationPolicy(
-            issuer=idp.issuer("ingress"), audiences=frozenset({"api://agent-ingress"})
+            issuer=idp.issuer("ingress"),
+            audiences=frozenset({"api://agent-ingress"}),
+            access_token_profile=access_token_profile,
         ),
         jwks(f"{BASE}/oauth2/ingress/v1/keys"),
         now=clock,

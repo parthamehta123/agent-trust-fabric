@@ -76,6 +76,9 @@ class HttpxTokenEndpoint:
                 return HttpResult(
                     resp.status_code, body if body is not None else {}, dpop_nonce=nonce
                 )
+        except (httpx.ConnectError, httpx.ConnectTimeout):
+            # Never sent: safe to retry even a single-use input (token-exchange review #4).
+            raise TransportError("token endpoint unreachable", maybe_sent=False) from None
         except httpx.HTTPError:
             # Dropped cause on purpose: httpx messages can include request details (TM-ING-06).
             raise TransportError("token endpoint unreachable") from None
