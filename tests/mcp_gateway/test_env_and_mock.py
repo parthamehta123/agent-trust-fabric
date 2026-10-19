@@ -10,6 +10,7 @@ from typing import Any
 import pytest
 from atf_mcp_gateway.app import build_admin_app, build_data_app
 from fastapi.testclient import TestClient
+from joserfc import jws
 from joserfc.jwk import RSAKey
 from moto import mock_aws
 
@@ -147,3 +148,43 @@ def test_mock_renders_actor_chain(mcp: TestClient, mint: Mint) -> None:
     )
     text = r.json()["result"]["content"][0]["text"]
     assert text.endswith("via 0oa-agent-beta on behalf of 0oa-agent-alpha")
+
+
+class TestMockMcpOktaShape:
+    """A-15: with Okta-shaped tool tokens (no typ; the user's id in uid) the mock tool reads the
+    user from uid, and still refuses any other token type."""
+
+    @staticmethod
+    def client(rsa_key: RSAKey) -> TestClient:
+        env = {
+            "ATF_ENV": "local",
+            "ATF_TOOL_ISSUER": TOOL_ISS,
+            "ATF_TOOL_AUDIENCE": TOOL_AUD,
+            "ATF_ACCESS_TOKEN_PROFILE": "okta",
+        }
+        jwks = {"keys": [rsa_key.as_dict(private=False)]}
+        return TestClient(mock_mcp_app(env=env, keys=lambda: jwks, now=lambda: NOW))
+
+    @staticmethod
+    def okta_tok(rsa_key: RSAKey, header: dict[str, Any] | None = None) -> str:
+        claims = good_claims(
+            iss=TOOL_ISS,
+            aud=TOOL_AUD,
+            act={"sub": "0oa-agent-alpha"},
+            sub="alice@users.example.test",
+            uid="00u-alice",
+        )
+        h = {"alg": "RS256", "kid": rsa_key.kid, **(header or {})}
+        return jws.serialize_compact(h, json.dumps(claims).encode(), rsa_key, algorithms=["RS256"])
+
+    def test_typless_token_names_the_user_by_id(self, rsa_key: RSAKey) -> None:
+        r = call(self.client(rsa_key), self.okta_tok(rsa_key))
+        assert (
+            r.json()["result"]["content"][0]["text"]
+            == "ticket T-9 for 00u-alice via 0oa-agent-alpha"
+        )
+
+    @pytest.mark.security
+    def test_other_token_types_still_refused(self, rsa_key: RSAKey) -> None:
+        r = call(self.client(rsa_key), self.okta_tok(rsa_key, {"typ": "JWT"}))
+        assert r.status_code == 401

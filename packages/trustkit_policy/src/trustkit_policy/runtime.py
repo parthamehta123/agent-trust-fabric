@@ -19,7 +19,7 @@ from trustkit.audit import AuditEvent, AuditSink, Decision
 from trustkit.binding import AgentPolicy
 from trustkit.config import ConfigSourceError, load_document
 from trustkit.exchange import KeyResolverFactory
-from trustkit.jwt import TokenValidator, ValidationPolicy, VerifiedToken
+from trustkit.jwt import AccessTokenProfile, TokenValidator, ValidationPolicy, VerifiedToken
 from trustkit.profiles import ScannerFailureMode
 from trustkit.signing import es256_public_jwk
 from trustkit_policy.bundle import BundleHolder, BundleVerifier, LoadedBundle, RefreshOutcome
@@ -96,6 +96,7 @@ def actor_policies_from_bundle(
     scopes_for: Callable[[AgentGrant], frozenset[str]],
     now: Callable[[], int],
     trusted_idps: TrustedIdps,
+    access_token_profile: AccessTokenProfile = AccessTokenProfile.RFC9068,
 ) -> dict[str, AgentPolicy]:
     """``{client_id: AgentPolicy}`` for ``bind_actor``: only unexpired grants that have a T2
     binding on a trusted IdP (``trusted_idps``, deployment config) and a non-empty
@@ -115,7 +116,10 @@ def actor_policies_from_bundle(
         out[agent_id] = AgentPolicy(
             TokenValidator(
                 ValidationPolicy(
-                    issuer=b.t2_issuer, audiences=frozenset({b.t2_audience}), expected_typ="at+jwt"
+                    issuer=b.t2_issuer,
+                    audiences=frozenset({b.t2_audience}),
+                    expected_typ="at+jwt",
+                    access_token_profile=access_token_profile,
                 ),
                 jwks(b.t2_jwks_uri),
                 now=now,

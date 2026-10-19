@@ -47,7 +47,12 @@ from trustkit.dpop import (
     guard_error_status,
 )
 from trustkit.exchange import KeyResolverFactory
-from trustkit.jwt import TokenValidationError, TokenValidator
+from trustkit.jwt import (
+    AccessTokenProfile,
+    TokenValidationError,
+    TokenValidator,
+    access_token_profile_from_env,
+)
 from trustkit_aws.secrets import secret_bytes_fetcher
 from trustkit_policy.bundle import LoadedBundle
 from trustkit_policy.idps import TrustedIdps
@@ -94,6 +99,7 @@ def bundle_binder(
     now: Callable[[], int],
     *,
     trusted_idps: TrustedIdps,
+    access_token_profile: AccessTokenProfile = AccessTokenProfile.RFC9068,
 ) -> Binder:
     """``bind_actor`` with agents from the bundle (any grant with tools and a T2 binding on a
     trusted IdP). No fresh bundle -> ``PolicyUnavailableError``."""
@@ -114,6 +120,7 @@ def bundle_binder(
             scopes_for=lambda g: frozenset().union(*g.tools.values()),
             now=now,
             trusted_idps=trusted_idps,
+            access_token_profile=access_token_profile,
         )
         return bind_actor(
             auth.removeprefix("Bearer "),
@@ -395,14 +402,24 @@ def build_data_app(env: Mapping[str, str]) -> FastAPI:
     from trustkit_policy.runtime import policy_from_env
 
     c = _common(env)
+    atp = access_token_profile_from_env(env)  # A-15: the IdP's access-token shape
     egress_doc = json.loads(load_document(env, "ATF_EGRESS_PROFILE"))
     ei = EgressInbound.model_validate_json(json.dumps(egress_doc["egress_inbound"]))
     workload_v = TokenValidator(
-        ValidationPolicy(issuer=ei.issuer, audiences=ei.audiences, expected_typ="at+jwt"),
+        ValidationPolicy(
+            issuer=ei.issuer,
+            audiences=ei.audiences,
+            expected_typ="at+jwt",
+            access_token_profile=atp,
+        ),
         c["jwks"](ei.jwks_uri),
     )
     exchanger = IdJagExchanger(
-        http=c["http"], signers=make_signer_factory(env), jwks=c["jwks"], breakers=BreakerRegistry()
+        http=c["http"],
+        signers=make_signer_factory(env),
+        jwks=c["jwks"],
+        breakers=BreakerRegistry(),
+        access_token_profile=atp,
     )
     credentials = GatewayCredentials(
         exchanger=exchanger,
@@ -442,7 +459,12 @@ def build_data_app(env: Mapping[str, str]) -> FastAPI:
         on_unbound=on_unbound,
     )
     binder = bundle_binder(
-        policy, workload_v, c["jwks"], now, trusted_idps=TrustedIdps.from_env(env)
+        policy,
+        workload_v,
+        c["jwks"],
+        now,
+        trusted_idps=TrustedIdps.from_env(env),
+        access_token_profile=atp,
     )
     return create_data_app(proxy, binder, dpop)
 
@@ -459,6 +481,7 @@ def build_admin_app(env: Mapping[str, str]) -> FastAPI:
             issuer=env["ATF_ADMIN_ISSUER"],
             audiences=frozenset({env["ATF_ADMIN_AUDIENCE"]}),
             expected_typ="at+jwt",
+            access_token_profile=access_token_profile_from_env(env),
         ),
         c["jwks"](env["ATF_ADMIN_JWKS_URI"]),
     )

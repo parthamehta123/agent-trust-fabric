@@ -13,17 +13,20 @@ import time
 from typing import Any
 
 import pytest
+from joserfc import jws
 from joserfc.jwk import ECKey, RSAKey
 
 from tests.conftest import AUDIENCE, ISSUER, NOW, Mint, StaticKeys, b64url, good_claims, raw_jws
 from trustkit.jwt import (
     FORBIDDEN_HEADER_PARAMS,
     MAX_LEEWAY_SECONDS,
+    AccessTokenProfile,
     JwksKeyResolver,
     Reason,
     TokenValidationError,
     TokenValidator,
     ValidationPolicy,
+    access_token_profile_from_env,
 )
 
 
@@ -683,3 +686,93 @@ class TestRfcReview:
         doc = {"keys": [{**rsa_key.as_dict(private=False), "key_ops": ["verify"]}]}
         v = TokenValidator(policy(), JwksKeyResolver(fetch=_Fetcher(doc)), now=lambda: NOW)
         assert v.validate(mint()).subject
+
+
+class TestOktaProfile:
+    """A-15 (token-exchange review #1): Okta access tokens have no ``typ``, ``scp`` (array), ``cid``
+    and ``uid``. The ``okta`` profile accepts and normalises them; nothing else is relaxed."""
+
+    @staticmethod
+    def v(rsa_key: RSAKey, ec_key: ECKey, profile: str = "okta", **kw: Any) -> TokenValidator:
+        p = policy(expected_typ="at+jwt", access_token_profile=AccessTokenProfile(profile), **kw)
+        return TokenValidator(p, StaticKeys(rsa_key, ec_key), now=lambda: NOW)
+
+    @staticmethod
+    def okta_token(
+        key: RSAKey, claims: dict[str, Any], header: dict[str, Any] | None = None
+    ) -> str:
+        """A raw JWS: joserfc's jwt.encode would add ``typ: JWT``, which Okta never sends."""
+        h = {"alg": "RS256", "kid": key.kid, **(header or {})}
+        return jws.serialize_compact(h, json.dumps(claims).encode(), key, algorithms=["RS256"])
+
+    def okta_claims(self, **over: Any) -> dict[str, Any]:
+        c = good_claims(sub="alice@example.test", uid="00u-alice", cid="0oa-chat", scp=["a", "b"])
+        c.update(over)
+        return {k: v for k, v in c.items() if v is not None}
+
+    def test_typless_okta_token_is_normalised(self, rsa_key: RSAKey, ec_key: ECKey) -> None:
+        t = self.v(rsa_key, ec_key).validate(self.okta_token(rsa_key, self.okta_claims()))
+        assert (t.subject, t.claims["client_id"], t.claims["scope"]) == (
+            "00u-alice",
+            "0oa-chat",
+            "a b",
+        )
+
+    @pytest.mark.security
+    def test_rfc9068_profile_refuses_a_typless_token(self, rsa_key: RSAKey, ec_key: ECKey) -> None:
+        token = self.okta_token(rsa_key, self.okta_claims())
+        assert_rejected(self.v(rsa_key, ec_key, "rfc9068"), token, Reason.WRONG_TYP)
+
+    @pytest.mark.security
+    @pytest.mark.parametrize("typ", ["JWT", "oauth-id-jag+jwt", "dpop+jwt", "jwt"])
+    def test_okta_profile_still_refuses_other_token_types(
+        self, rsa_key: RSAKey, ec_key: ECKey, typ: str
+    ) -> None:
+        """Only a *missing* typ is relaxed: an ID-JAG or a plain JWT never passes as an access
+        token (RFC 8725 §2.8)."""
+        token = self.okta_token(rsa_key, self.okta_claims(), {"typ": typ})
+        assert_rejected(self.v(rsa_key, ec_key), token, Reason.WRONG_TYP)
+
+    def test_okta_profile_accepts_at_jwt_too(self, rsa_key: RSAKey, ec_key: ECKey) -> None:
+        token = self.okta_token(rsa_key, self.okta_claims(), {"typ": "at+jwt"})
+        assert self.v(rsa_key, ec_key).validate(token).subject == "00u-alice"
+
+    @pytest.mark.security
+    @pytest.mark.parametrize(
+        "over",
+        [
+            {"scp": "a b"},  # not an array
+            {"scp": ["a", 1]},
+            {"scp": ["a", ""]},
+            {"cid": 7},
+            {"uid": ""},
+            {"scope": "a c"},  # disagrees with scp
+            {"client_id": "0oa-other"},  # disagrees with cid
+        ],
+    )
+    def test_malformed_or_ambiguous_okta_claims(
+        self, rsa_key: RSAKey, ec_key: ECKey, over: dict[str, Any]
+    ) -> None:
+        token = self.okta_token(rsa_key, self.okta_claims(**over))
+        assert_rejected(self.v(rsa_key, ec_key), token, Reason.MALFORMED)
+
+    def test_agreeing_standard_claims_are_fine(self, rsa_key: RSAKey, ec_key: ECKey) -> None:
+        token = self.okta_token(rsa_key, self.okta_claims(scope="b a", client_id="0oa-chat"))
+        assert self.v(rsa_key, ec_key).validate(token).claims["client_id"] == "0oa-chat"
+
+    def test_rfc9068_profile_never_rewrites_claims(
+        self, rsa_key: RSAKey, ec_key: ECKey, mint: Mint
+    ) -> None:
+        claims = good_claims(uid="someone-else", cid="x", scp=["y"])
+        t = self.v(rsa_key, ec_key, "rfc9068").validate(mint(claims, header={"typ": "at+jwt"}))
+        assert t.subject == claims["sub"]
+        assert "client_id" not in t.claims
+
+    def test_env_profile(self) -> None:
+        assert access_token_profile_from_env({}) is AccessTokenProfile.RFC9068
+        assert (
+            access_token_profile_from_env({"ATF_ACCESS_TOKEN_PROFILE": "okta"})
+            is AccessTokenProfile.OKTA
+        )
+        with pytest.raises(ValueError, match="not a valid"):
+            access_token_profile_from_env({"ATF_ACCESS_TOKEN_PROFILE": "Okta "})

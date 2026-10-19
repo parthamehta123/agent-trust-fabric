@@ -162,8 +162,9 @@ locals {
   }
 
   common_env = {
-    ATF_ENV    = var.environment
-    AWS_REGION = local.region
+    ATF_ENV                  = var.environment
+    AWS_REGION               = local.region
+    ATF_ACCESS_TOKEN_PROFILE = var.access_token_profile
   }
   rendered_env = {
     for svc in local.services : svc => merge(local.common_env, local.service_env[svc], lookup(local.dpop_env, svc, {}))

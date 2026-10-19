@@ -236,6 +236,16 @@ variable "dpop_mode" {
   }
 }
 
+variable "access_token_profile" {
+  type        = string
+  default     = "okta"
+  description = "Shape of the IdP's access tokens (A-15): okta (no typ, scp, cid, uid) or rfc9068."
+  validation {
+    condition     = contains(["okta", "rfc9068"], var.access_token_profile)
+    error_message = "okta or rfc9068."
+  }
+}
+
 variable "dpop_nonce_key_version" {
   type        = number
   default     = 1

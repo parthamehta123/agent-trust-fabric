@@ -52,6 +52,7 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from typing import Any, Final
 
+from joserfc import jws
 from joserfc import jwt as jose_jwt
 from joserfc.errors import JoseError
 from joserfc.jwk import ECKey, KeySet, RSAKey
@@ -175,7 +176,14 @@ class MockIdp:
         now: Callable[[], int] = lambda: int(time.time()),
         id_jag_ttl_s: int = 60,
         access_token_ttl_s: int = 300,
+        claim_shape: str = "rfc9068",
     ) -> None:
+        """``claim_shape``: ``rfc9068`` (``typ: at+jwt``, ``scope``, ``client_id``) or ``okta``,
+        the way Okta custom authorization servers shape access tokens (A-15): no ``typ``,
+        ``scp`` (array), ``cid``, and for a user ``sub`` = login with the user id in ``uid``."""
+        if claim_shape not in ("rfc9068", "okta"):
+            raise ValueError("claim_shape must be rfc9068 or okta")
+        self._okta = claim_shape == "okta"
         self._base = base_url.rstrip("/")
         self._now = now
         self._id_jag_ttl = id_jag_ttl_s
@@ -241,9 +249,8 @@ class MockIdp:
         now = self._now()
         auth_time = now if auth_time is None else auth_time
         server = self._servers[ingress_as_id]
-        access_token = self._sign(
-            self._server_keys[ingress_as_id],
-            ACCESS_TOKEN_TYP,
+        access_token = self._sign_access_token(
+            ingress_as_id,
             {
                 "iss": self.issuer(ingress_as_id),
                 "sub": user,
@@ -255,6 +262,7 @@ class MockIdp:
                 "jti": str(uuid.uuid4()),
                 "auth_time": auth_time,
             },
+            user=True,
         )
         id_token = self._sign(
             self._org_key,
@@ -404,7 +412,7 @@ class MockIdp:
         }
         if _is_int(c.get("auth_time")):
             t2_claims["auth_time"] = c["auth_time"]
-        t2 = self._sign(self._server_keys[as_id], ACCESS_TOKEN_TYP, t2_claims)
+        t2 = self._sign_access_token(as_id, t2_claims, user=True)
         return TokenResponse(
             200,
             {
@@ -443,7 +451,7 @@ class MockIdp:
             claims["groups"] = sorted(groups)
         if jkt is not None:
             claims["cnf"] = {"jkt": jkt}
-        token = self._sign(self._server_keys[as_id], ACCESS_TOKEN_TYP, claims)
+        token = self._sign_access_token(as_id, claims, user=False)
         return TokenResponse(
             200,
             {
@@ -507,7 +515,7 @@ class MockIdp:
             "iat": now,
             "exp": now + self._at_ttl,
         }
-        token = self._sign(self._server_keys[as_id], ACCESS_TOKEN_TYP, claims)
+        token = self._sign_access_token(as_id, claims, user=True)
         return TokenResponse(
             200,
             {
@@ -591,10 +599,11 @@ class MockIdp:
         if as_id is None:
             raise _OAuthError("invalid_grant", "token issuer unknown")
         verified = self._verify(token, self._server_keys[as_id], "invalid_grant", "token invalid")
-        if verified.header.get("typ") != ACCESS_TOKEN_TYP:
+        expected_typ = None if self._okta else ACCESS_TOKEN_TYP
+        if verified.header.get("typ") != expected_typ:
             raise _OAuthError("invalid_grant", "token is not an access token")
         self._require_unexpired(verified.claims, "invalid_grant", "token expired")
-        return as_id, dict(verified.claims)
+        return as_id, self._canonical(dict(verified.claims))
 
     # -- client authentication (RFC 7523 §2.2) -------------------------------------------------
 
@@ -628,6 +637,37 @@ class MockIdp:
         return claimed
 
     # -- primitives -------------------------------------------------------------------------------
+
+    def _sign_access_token(self, as_id: str, claims: dict[str, Any], *, user: bool) -> str:
+        """``claims`` in the RFC 9068 shape; reshaped like Okta when ``claim_shape == "okta"``."""
+        if not self._okta:
+            return self._sign(self._server_keys[as_id], ACCESS_TOKEN_TYP, claims)
+        out = {k: v for k, v in claims.items() if k not in ("scope", "client_id")}
+        if "scope" in claims:
+            out["scp"] = str(claims["scope"]).split()
+        if "client_id" in claims:
+            out["cid"] = claims["client_id"]
+        if user:  # Okta: sub is the user's login; the stable id is uid
+            out["uid"], out["sub"] = claims["sub"], f"{claims['sub']}@users.example.test"
+        key = self._server_keys[as_id]
+        # Raw JWS: joserfc's jwt.encode would add "typ": "JWT", and Okta sends no typ at all.
+        payload = json.dumps(out, separators=(",", ":")).encode()
+        return jws.serialize_compact(
+            {"alg": "RS256", "kid": key.kid}, payload, key, algorithms=["RS256"]
+        )
+
+    def _canonical(self, c: dict[str, Any]) -> dict[str, Any]:
+        """Our own access token's claims back in the RFC 9068 shape (the inverse of the above)."""
+        if not self._okta:
+            return c
+        out = {k: v for k, v in c.items() if k not in ("scp", "cid", "uid")}
+        if isinstance(c.get("scp"), list):
+            out["scope"] = " ".join(c["scp"])
+        if "cid" in c:
+            out["client_id"] = c["cid"]
+        if "uid" in c:
+            out["sub"] = c["uid"]
+        return out
 
     def _sign(self, key: RSAKey, typ: str, claims: dict[str, Any]) -> str:
         return jose_jwt.encode(

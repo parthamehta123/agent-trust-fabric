@@ -68,3 +68,34 @@
 - Each tool sees user, agent and scopes: full attribution.
 - Third-party tools that cannot accept delegated tokens use the per-target credential path
   (`delegation = none`) in slice 3b.
+
+## RFC self-review of the token exchange (2026-10-19)
+
+`trustkit.exchange` (ingress ID-JAG and T2, egress delegation), the client assertions and the
+mock IdP, reviewed against RFC 8693, RFC 7523, the ID-JAG draft and Okta's documentation. As
+configured, nothing let a forged or over-scoped token through. Each code finding has a
+regression test (`tests/exchange/test_token_exchange_review.py`, `TestOktaProfile`).
+
+| # | Severity | Finding | Fix |
+|---|---|---|---|
+| 1 | **High (interop: blocks the sandbox; fails closed)** | Every access-token validator required `typ: at+jwt`, a `scope` string and `client_id` (RFC 9068). Okta custom authorization servers send **no `typ`**, **`scp`** (array) and **`cid`**, and a user's `sub` is their login with the id in `uid`. Every real workload, T2, tool and admin token would have been refused; the mock issued the RFC 9068 shape, so no test could see it. | `AccessTokenProfile` per deployment (`ATF_ACCESS_TOKEN_PROFILE`; IaC `okta`). The `okta` profile accepts a *missing* `typ` where `at+jwt` is expected (any other `typ` is still refused, RFC 8725 §2.8) and normalises `scp`→`scope`, `cid`→`client_id` and `uid`→`sub`; conflicting pairs are `malformed`. The mock IdP issues Okta-shaped tokens in compose, so CI runs the real shape. **A-15.** |
+| 2 | Medium (unrecorded assumptions) | Delegated tool tokens depend on Okta accepting `actor_token` and emitting `act` exactly; undocumented by Okta and unrecorded here. | **A-16**, with a sandbox verification row. **Fallback if it fails:** the gateway's own client gets the tool token by token exchange with the subject token alone, and the actor travels in a signed header the tool verifies against the gateway's key. That needs its own ADR before any code. |
+| 3 | Low | The ingress T2 cache key omitted the requested scopes and the client (the delegated key already had them): narrowing a profile's scopes left a broader cached T2 in use for up to 5 min. | Client and sorted scopes are in the key. |
+| 4 | Low (availability) | After a timeout the JWT-bearer step was retried with the **same** ID-JAG; if the first request had reached the IdP, its single-use `jti` was spent and the retry could only fail. | `TransportError.maybe_sent`: only a connect failure is "never sent". Steps with single-use input retry only then; the other steps still retry after a timeout. |
+
+**Verified correct (no change):**
+- **Client assertions (RFC 7523 §3):** ES256, `iss`/`sub` = client, `aud` = token endpoint, a lifetime of 60 s or less, a 256-bit `jti`, and a fresh assertion for every attempt.
+- **Audience injection:** the 2025 issue that led rfc7523bis to prefer `aud` = issuer doesn't apply. Endpoints come from config or trusted IdP origins (ADR-0027 review #1), never from discovered metadata, and Okta requires the token endpoint as `aud`.
+- **RFC 8693 responses:** `issued_token_type` and `token_type` are checked (`N_A` for the ID-JAG, `Bearer` for access tokens).
+- **Every minted token is validated before use or caching:**
+  - `iss`, `aud`, `typ` and the signature are checked;
+  - the ID-JAG and T2 must name the same user and client (mix-up defence);
+  - the delegated token must carry exactly the expected `act` chain and the gateway's client;
+  - scopes can only narrow.
+- **IdP errors:** only RFC 6749 codes are surfaced, and descriptions are dropped.
+- **Cache:** keys are per user and length-prefixed, with no fallback key. Only 5xx and 429 responses count as IdP failures.
+- **Mock IdP:**
+  - client authentication is `private_key_jwt` only, with `aud`, lifetime and `jti` replay checks;
+  - ID-JAGs are single use;
+  - delegation requires the actor to be the agent the subject token was issued to, caps chains and checks the target.
+

@@ -28,6 +28,7 @@ from trustkit.breaker import BreakerRegistry
 from trustkit.cache import TokenCache, cache_key
 from trustkit.jwt import (
     CORE_REQUIRED_CLAIMS,
+    AccessTokenProfile,
     KeyResolver,
     TokenValidationError,
     TokenValidator,
@@ -75,7 +76,15 @@ class HttpResult:
 
 
 class TransportError(Exception):
-    """No HTTP response was received (connect error, timeout). The only retryable failure."""
+    """No HTTP response was received (connect error, timeout). The only retryable failure.
+
+    ``maybe_sent``: ``False`` only when the request certainly never left (connect failure). A
+    timeout after sending may have reached the IdP, which then consumed any single-use input
+    (token-exchange review #4)."""
+
+    def __init__(self, message: str = "", *, maybe_sent: bool = True) -> None:
+        super().__init__(message)
+        self.maybe_sent = maybe_sent
 
 
 class TokenEndpoint(Protocol):
@@ -150,8 +159,12 @@ class IdJagExchanger:
         cache: TokenCache[ExchangeResult] | None = None,
         breakers: BreakerRegistry | None = None,
         now: Callable[[], int] = lambda: int(time.time()),
+        access_token_profile: AccessTokenProfile = AccessTokenProfile.RFC9068,
     ) -> None:
-        """``breakers``: per-endpoint circuit breakers (ADR-0014 §4); ``None`` disables them."""
+        """``breakers``: per-endpoint circuit breakers (ADR-0014 §4); ``None`` disables them.
+        ``access_token_profile``: the shape of the resource ASes' access tokens (T2 and delegated
+        tokens; A-15). The ID-JAG always follows its draft (``typ``, ``scope``, ``client_id``)."""
+        self._access_token_profile = access_token_profile
         self._breakers = breakers
         self._http = http
         self._signers = signers
@@ -172,12 +185,17 @@ class IdJagExchanger:
         if key_ref is None:
             raise ExchangeError(ExchangeReason.CLIENT_NOT_CONFIGURED)
 
+        # The client and requested scopes are part of the key (token-exchange review #3): when a
+        # profile's scopes are narrowed, a T2 minted under the broader ones is never served.
         key = cache_key(
             at_jti=bound.access_token.jti,
             idt_jti=bound.id_token.jti,
             subject=bound.subject,
             audience=profile.target.audience,
-            profile_id=profile.profile_id,
+            profile_id=(
+                f"{profile.profile_id}#ingress#{bound.client_id}"
+                f"#{' '.join(sorted(profile.target.scopes))}"
+            ),
         )
         if key is not None and (hit := self._cache.get(key)) is not None:
             return dataclasses.replace(hit, cached=True)
@@ -224,6 +242,7 @@ class IdJagExchanger:
             signer,
             bound.client_id,
             {"grant_type": GRANT_JWT_BEARER, "assertion": id_jag},
+            retry_after_send=False,  # the ID-JAG is single use: a resend can only be refused
         )
         if not _token_type_is(body, "bearer"):
             raise ExchangeError(ExchangeReason.MALFORMED_RESPONSE, step=step)
@@ -334,8 +353,17 @@ class IdJagExchanger:
     # -- helpers ----------------------------------------------------------------------------------
 
     def _call(
-        self, step: str, url: str, signer: KeySigner, client_id: str, form: Mapping[str, str]
+        self,
+        step: str,
+        url: str,
+        signer: KeySigner,
+        client_id: str,
+        form: Mapping[str, str],
+        *,
+        retry_after_send: bool = True,
     ) -> Mapping[str, Any]:
+        """``retry_after_send=False``: the form carries a single-use input, so retry only when
+        the first request certainly never left (token-exchange review #4)."""
         breaker = self._breakers.get(url) if self._breakers is not None else None
         if breaker is not None and not breaker.allow():
             raise ExchangeError(ExchangeReason.CIRCUIT_OPEN, step=step)
@@ -359,8 +387,8 @@ class IdJagExchanger:
                         "client_assertion": assertion,
                     },
                 )
-            except TransportError:
-                if attempt == _MAX_ATTEMPTS:
+            except TransportError as e:
+                if attempt == _MAX_ATTEMPTS or (e.maybe_sent and not retry_after_send):
                     if breaker is not None:
                         breaker.record_failure()
                     raise ExchangeError(ExchangeReason.IDP_UNAVAILABLE, step=step) from None
@@ -392,12 +420,18 @@ class IdJagExchanger:
         cache_key_ = (issuer, audience, typ, jwks_uri)
         validator = self._validators.get(cache_key_)
         if validator is None:
+            profile = (
+                self._access_token_profile
+                if typ == ACCESS_TOKEN_TYP
+                else AccessTokenProfile.RFC9068
+            )
             validator = TokenValidator(
                 ValidationPolicy(
                     issuer=issuer,
                     audiences=frozenset({audience}),
                     expected_typ=typ,
                     required_claims=_DELEGATED_TOKEN_CLAIMS,
+                    access_token_profile=profile,
                 ),
                 self._jwks(jwks_uri),
                 now=self._now,

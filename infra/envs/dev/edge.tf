@@ -38,6 +38,7 @@ locals {
     ATF_ENV                  = var.environment
     ATF_PROFILES_JSON        = jsonencode(local.ingress_profile)
     ATF_GATEWAY_ID_PARAMETER = local.gateway_id_param
+    ATF_ACCESS_TOKEN_PROFILE = var.access_token_profile
   }
 
   # Ingress only: no bundle (egress isn't served by this Lambda), so no S3 and no data-key grants.

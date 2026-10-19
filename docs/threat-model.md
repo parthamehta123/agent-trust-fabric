@@ -175,6 +175,7 @@ Status values: `planned` · `in-progress` · `done (test: <id>)` · `accepted (A
 
 | Date | Reviewer | Notes |
 |---|---|---|
+| 2026-10-19 | Partha Mehta | Token-exchange RFC self-review (RFC 8693, RFC 7523, ID-JAG; ADR-0016). Validators gained an `okta` access-token profile (A-15: no `typ`, `scp`, `cid`, `uid`), and the mock IdP issues that shape in compose. A-16 (Okta `actor_token`/`act`) recorded with a fallback. The ingress T2 cache key now includes the client and scopes, and a single-use ID-JAG is never resent after a timeout. |
 | 2026-10-19 | Partha Mehta | ADR-0027 RFC self-review (RFC 7517/7518, 8414, 8725, 9068). TM-CP-08 added: agents' T2 issuers bound to trusted IdP origins (registry and gateways). TM-ING-03: JWKS fetch outside the lock with one in flight; a non-JWK-Set response is a failed fetch; key `alg`/`key_ops` enforced; `typ` compared as a media type. RR-9 wording corrected (5 min only while the JWKS URL is reachable). |
 | 2026-10-10 | — | Initial draft |
 | 2026-10-11 | Partha Mehta | Accepted ADR-0006/7/8. Added TM-ING-08 and TM-TOOL-07. |

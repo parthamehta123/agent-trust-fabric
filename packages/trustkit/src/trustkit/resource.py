@@ -15,6 +15,7 @@ from typing import Final
 
 from trustkit.jwt import (
     CORE_REQUIRED_CLAIMS,
+    AccessTokenProfile,
     KeyResolver,
     Reason,
     TokenValidationError,
@@ -97,6 +98,7 @@ class ResourceAuthorizer:
         keys: KeyResolver,
         now: Callable[[], int] = lambda: int(time.time()),
         accept_actor: Callable[[str], bool] | None = None,
+        access_token_profile: AccessTokenProfile = AccessTokenProfile.RFC9068,
     ) -> None:
         """``accept_actor``: whether a delegated token from that agent is acceptable (bundle +
         Cedar ``delegate``). ``None`` = delegated tokens (any ``act``) are refused."""
@@ -107,6 +109,7 @@ class ResourceAuthorizer:
                 audiences=frozenset({audience}),
                 expected_typ="at+jwt",
                 required_claims=CORE_REQUIRED_CLAIMS | {"client_id", "jti", "scope"},
+                access_token_profile=access_token_profile,
             ),
             keys,
             now=now,

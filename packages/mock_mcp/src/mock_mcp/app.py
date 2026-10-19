@@ -46,6 +46,8 @@ def create_app(
     if env.get("ATF_ENV") != "local":
         raise RuntimeError("the mock MCP server runs only with ATF_ENV=local")
     issuer, audience = env["ATF_TOOL_ISSUER"], env["ATF_TOOL_AUDIENCE"]
+    # A-15: with Okta-shaped tokens there is no typ header and the user's id is in uid.
+    okta = env.get("ATF_ACCESS_TOKEN_PROFILE") == "okta"
     state: dict[str, Any] = {"tools": _tools()}
     app = FastAPI(title="mock-mcp (test infrastructure)", docs_url=None, redoc_url=None)
 
@@ -60,10 +62,12 @@ def create_app(
             )
         except (JoseError, ValueError, TypeError, KeyError):
             return None
-        c, act = tok.claims, tok.claims.get("act")
+        c, act = dict(tok.claims), tok.claims.get("act")
+        if okta and isinstance(c.get("uid"), str):
+            c["sub"] = c["uid"]
         aud = c.get("aud")
         if (
-            tok.header.get("typ") != "at+jwt"
+            tok.header.get("typ") not in (("at+jwt", None) if okta else ("at+jwt",))
             or c.get("iss") != issuer
             or (aud != audience and not (isinstance(aud, list) and audience in aud))
             or not isinstance(c.get("exp"), int)

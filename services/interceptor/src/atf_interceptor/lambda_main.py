@@ -36,7 +36,7 @@ from trustkit.audit import AuditEvent, AuditSink, Decision, JsonLinesSink
 from trustkit.breaker import BreakerRegistry, CircuitState
 from trustkit.config import ca_bundle, load_document
 from trustkit.exchange import IdJagExchanger
-from trustkit.jwt import JwksKeyResolver, KeyResolver
+from trustkit.jwt import JwksKeyResolver, KeyResolver, access_token_profile_from_env
 from trustkit.profiles import load_profiles
 from trustkit.scanning import LocalRulesScanner
 from trustkit.signing import KeySigner
@@ -134,6 +134,7 @@ def build_handler(
             signers=make_signer_factory(env),
             jwks=jwks,
             breakers=BreakerRegistry(on_transition=on_transition),
+            access_token_profile=access_token_profile_from_env(env),
         )
         # Egress needs the signed policy bundle (ADR-0022). Ingress-only deployments don't set
         # it; without it every egress request is denied (fail closed), never allowed.
@@ -157,6 +158,7 @@ def build_handler(
             monotonic=time.monotonic,
             policy=policy,
             trusted_idps=trusted_idps,
+            access_token_profile=access_token_profile_from_env(env),
         )
         return make_handler(deps)
     except Exception:  # noqa: BLE001 - any wiring failure -> deny-all handler (fail closed)

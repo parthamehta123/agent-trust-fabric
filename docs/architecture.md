@@ -249,6 +249,15 @@ These are not yet confirmed.
   (ADR-0028, ingress).
 - A-14: Okta's DPoP nonce behaviour for client credentials (when required, lifetime) matches the
   agent implementation (ADR-0028 Phase 1).
+- A-15: Okta custom-authorization-server access tokens (workload, T2, tool and admin tokens) have
+  no `typ` header, carry scopes as `scp` (an array) and the client as `cid`, and for a user put
+  the login in `sub` and the stable user id in `uid`. Okta documents the first three; the
+  validators' `okta` profile (`ATF_ACCESS_TOKEN_PROFILE`) accepts exactly this, and the mock IdP
+  issues it in compose. To verify: that `uid` matches the ID token's `sub`, and that T2 from the
+  JWT-bearer grant (A-2) has the same shape (ADR-0016 RFC self-review).
+- A-16: Okta's token exchange at a custom authorization server accepts an `actor_token` and
+  emits RFC 8693 §4.1 `act` (the current actor outermost). Okta doesn't document this. Without
+  it, delegated tool tokens are refused (fail closed); fallback in ADR-0016.
 
 [RFC 8693]: https://www.rfc-editor.org/rfc/rfc8693
 [RFC 7523]: https://www.rfc-editor.org/rfc/rfc7523

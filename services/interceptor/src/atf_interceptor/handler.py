@@ -49,7 +49,7 @@ from trustkit.binding import (
     bind_actor,
 )
 from trustkit.exchange import ExchangeError, ExchangeReason, ExchangeResult, KeyResolverFactory
-from trustkit.jwt import TokenValidator, ValidationPolicy
+from trustkit.jwt import AccessTokenProfile, TokenValidator, ValidationPolicy
 from trustkit.profiles import (
     Flow,
     GatewayProfile,
@@ -110,6 +110,8 @@ class InterceptorDeps:
     """Current verified policy bundle (ADR-0022). ``None`` = no fresh bundle: egress denies."""
     trusted_idps: TrustedIdps | None = None
     """IdPs an agent's T2 may come from (ADR-0027 review #1). ``None``: egress denies."""
+    access_token_profile: AccessTokenProfile = AccessTokenProfile.RFC9068
+    """The IdP's access-token shape (A-15), for every access token this handler validates."""
 
 
 Handler = Callable[[Mapping[str, Any], Any], dict[str, Any]]
@@ -159,7 +161,11 @@ def make_handler(deps: InterceptorDeps) -> Handler:
         )
         if key not in validators:
             at_v = TokenValidator(
-                ValidationPolicy(issuer=it.issuer, audiences=it.audiences),
+                ValidationPolicy(
+                    issuer=it.issuer,
+                    audiences=it.audiences,
+                    access_token_profile=deps.access_token_profile,
+                ),
                 deps.jwks(it.jwks_uri),
                 now=deps.now,
             )
@@ -180,7 +186,12 @@ def make_handler(deps: InterceptorDeps) -> Handler:
         key = (profile.profile_id, ei.issuer, ei.jwks_uri, *sorted(ei.audiences))
         if key not in workload_cache:
             workload_cache[key] = TokenValidator(
-                ValidationPolicy(issuer=ei.issuer, audiences=ei.audiences, expected_typ="at+jwt"),
+                ValidationPolicy(
+                    issuer=ei.issuer,
+                    audiences=ei.audiences,
+                    expected_typ="at+jwt",
+                    access_token_profile=deps.access_token_profile,
+                ),
                 deps.jwks(ei.jwks_uri),
                 now=deps.now,
             )
@@ -365,6 +376,7 @@ def _decide_egress_request(
         scopes_for=lambda g: g.tools.get(server_id, frozenset()) & target_scopes,
         now=deps.now,
         trusted_idps=deps.trusted_idps,
+        access_token_profile=deps.access_token_profile,
     )
     try:
         binding = bind_actor(
