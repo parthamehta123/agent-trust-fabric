@@ -6,7 +6,7 @@ PACKAGES := mock-idp gateway-emulator atf-agent-runtime atf-interceptor atf-mcp-
             atf-inference-gateway mock-llm atf-agent-registry atf-a2a-gateway \
             atf-knowledge-server
 
-.PHONY: certs kb-index wheels up e2e demo-stolen-token logs-scan down clean iac-tools iac-validate iac-plan iac-apply image-policy
+.PHONY: certs kb-index wheels up e2e demo-stolen-token logs-scan down clean iac-tools iac-validate iac-plan iac-apply image-policy okta-probe-keys okta-probes
 
 certs:  ## ephemeral CA, service certs, client key, configs -> .local-ca/ (gitignored)
 	uv run python -m devstack.bootstrap --out .local-ca
@@ -113,3 +113,10 @@ iac-apply: iac-guard  ## plan then apply that exact plan, with the CI apply role
 	mkdir -p build/iac-cache
 	$(IAC_AWS) init -input=false -backend-config=backend.hcl
 	$(subst $(TOFU),--entrypoint sh $(TOFU),$(IAC_AWS)) -c 'tofu plan -input=false -lock-timeout=60s -var-file=terraform.tfvars -out=/tmp/dev.plan -no-color && tofu apply -input=false -no-color /tmp/dev.plan'
+
+okta-probe-keys:  ## Okta preflight: client keys to .okta-preflight/keys (gitignored); prints public JWKs only
+	uv run python scripts/okta_probe_keys.py
+
+okta-probes:  ## Okta preflight (opt-in): A-2/A-12/A-14/A-15/A-16 against your tenant; ATF_OKTA_LOGIN=1 for user probes
+	ATF_OKTA_PROBES=1 ATF_OKTA_CONFIG=$${ATF_OKTA_CONFIG:-.okta-preflight/config.json} \
+	  uv run pytest -m okta tests/okta_probes -v -p no:cacheprovider

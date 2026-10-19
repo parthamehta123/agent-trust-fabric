@@ -102,6 +102,8 @@ markers = [
     "security: negative-path tests that map to a threat-model mitigation ID (TM-*)",
     "compose: end-to-end tests against the running docker compose stack (make up e2e)",
     "aws: opt-in probes (tests/aws_probes) against a sandbox apply (ATF_AWS_PROBES=1, AWS_PROFILE, ATF_AWS_OUTPUTS)",
+    "okta: opt-in probes (tests/okta_probes) against an Okta tenant (ATF_OKTA_PROBES=1, ATF_OKTA_CONFIG)",
+    "assumption(id): the architecture.md assumption a probe verifies (A-x)",
 ]
 xfail_strict = true
 
