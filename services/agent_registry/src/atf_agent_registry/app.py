@@ -154,7 +154,8 @@ def create_app(service: RegistryService, validator: TokenValidator) -> FastAPI:
 
 def build_app(env: Mapping[str, str]) -> FastAPI:
     """``ATF_REGISTRY_ISSUER``/``_AUDIENCE``/``_JWKS_URI``, ``ATF_REGISTRY_TABLE``,
-    ``ATF_CA_BUNDLE``, ``AWS_REGION``; table created only with ``ATF_ENV=local``."""
+    ``ATF_TRUSTED_IDP_ORIGINS``, ``ATF_CA_BUNDLE``, ``AWS_REGION``; table created only with
+    ``ATF_ENV=local``."""
     import sys
 
     import boto3
@@ -163,6 +164,7 @@ def build_app(env: Mapping[str, str]) -> FastAPI:
     from trustkit.audit import JsonLinesSink
     from trustkit.jwt import JwksKeyResolver, ValidationPolicy
     from trustkit_http.endpoint import HttpxTokenEndpoint
+    from trustkit_policy.idps import TrustedIdps
 
     issuer, audience = env["ATF_REGISTRY_ISSUER"], env["ATF_REGISTRY_AUDIENCE"]
     jwks_uri, table = env["ATF_REGISTRY_JWKS_URI"], env["ATF_REGISTRY_TABLE"]
@@ -176,7 +178,11 @@ def build_app(env: Mapping[str, str]) -> FastAPI:
     ddb = boto3.client("dynamodb", region_name=region)
     if env.get("ATF_ENV") == "local":
         ensure_local_table(ddb, table)
-    service = RegistryService(DynamoRegistryStore(ddb, table), JsonLinesSink(sys.stdout))
+    service = RegistryService(
+        DynamoRegistryStore(ddb, table),
+        JsonLinesSink(sys.stdout),
+        trusted_idps=TrustedIdps.from_env(env),
+    )
     return create_app(service, validator)
 
 

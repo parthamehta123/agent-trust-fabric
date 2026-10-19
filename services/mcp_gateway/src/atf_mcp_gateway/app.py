@@ -50,6 +50,7 @@ from trustkit.exchange import KeyResolverFactory
 from trustkit.jwt import TokenValidationError, TokenValidator
 from trustkit_aws.secrets import secret_bytes_fetcher
 from trustkit_policy.bundle import LoadedBundle
+from trustkit_policy.idps import TrustedIdps
 
 _ADMIN_STATUS: Final = {
     AdminFailure.UNAUTHORIZED: 401,
@@ -91,9 +92,11 @@ def bundle_binder(
     workload_validator: TokenValidator,
     jwks: KeyResolverFactory,
     now: Callable[[], int],
+    *,
+    trusted_idps: TrustedIdps,
 ) -> Binder:
-    """``bind_actor`` with agents from the bundle (any grant with tools and a T2 binding).
-    No fresh bundle -> ``PolicyUnavailableError``."""
+    """``bind_actor`` with agents from the bundle (any grant with tools and a T2 binding on a
+    trusted IdP). No fresh bundle -> ``PolicyUnavailableError``."""
     from trustkit.binding import bind_actor
     from trustkit_policy.runtime import actor_policies_from_bundle
 
@@ -110,6 +113,7 @@ def bundle_binder(
             # Union of all granted tool scopes; per-server narrowing happens in the authorizer.
             scopes_for=lambda g: frozenset().union(*g.tools.values()),
             now=now,
+            trusted_idps=trusted_idps,
         )
         return bind_actor(
             auth.removeprefix("Bearer "),
@@ -437,7 +441,10 @@ def build_data_app(env: Mapping[str, str]) -> FastAPI:
         fetch_secret=secret_bytes_fetcher(c["region"]),
         on_unbound=on_unbound,
     )
-    return create_data_app(proxy, bundle_binder(policy, workload_v, c["jwks"], now), dpop)
+    binder = bundle_binder(
+        policy, workload_v, c["jwks"], now, trusted_idps=TrustedIdps.from_env(env)
+    )
+    return create_data_app(proxy, binder, dpop)
 
 
 def build_admin_app(env: Mapping[str, str]) -> FastAPI:

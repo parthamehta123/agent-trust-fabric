@@ -180,6 +180,7 @@ def env_vars(tmp_path: pathlib.Path) -> dict[str, str]:
         "ATF_REGISTRY_AUDIENCE": "api://agent-registry",
         "ATF_REGISTRY_JWKS_URI": "https://mock-idp:8443/oauth2/registry/v1/keys",
         "ATF_REGISTRY_TABLE": "agents",
+        "ATF_TRUSTED_IDP_ORIGINS": "https://mock-idp:8443",
         "ATF_CA_BUNDLE": str(tmp_path / "ca.pem"),
         "AWS_REGION": "us-east-1",
     }

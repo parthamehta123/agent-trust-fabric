@@ -14,6 +14,7 @@ from tests.exchange.conftest import (
     AGENT_CLIENT,
     ALICE,
     BASE,
+    TRUSTED_IDPS,
     World,
     alpha_grant,
     beta_grant,
@@ -96,6 +97,7 @@ class Rig:
                 gateway_base_url=GATEWAY,
                 egress_base=egress_base(),
                 target_scopes=frozenset({"agent.invoke", "tickets.read"}),
+                trusted_idps=TRUSTED_IDPS,
             ),
             now=world.clock,
         )
@@ -290,5 +292,22 @@ def test_audit_failure_means_nothing_minted_or_forwarded(world: World) -> None:
     rig.broker._audit = Down()
     calls = len(world.endpoint.calls)
     rig.fails(A2AFailure.AUDIT_UNAVAILABLE, binding=b)
+    assert len(world.endpoint.calls) == calls
+    assert rig.upstream.calls == []
+
+
+@pytest.mark.security
+def test_untrusted_callee_issuer_gets_no_exchange(world: World) -> None:
+    """ADR-0027 review #1: the callee's T2 issuer becomes a token endpoint, so a callee on an
+    untrusted IdP is refused before any token is minted or sent there."""
+    rogue = {
+        "t2_issuer": "https://idp.attacker.example/oauth2/b",
+        "t2_audience": "api://agent-beta",
+        "t2_jwks_uri": "https://idp.attacker.example/oauth2/b/v1/keys",
+    }
+    rig = Rig(world, a_grant(), b_grant(ingress=rogue))
+    b = rig.binding()
+    calls = len(world.endpoint.calls)
+    rig.fails(A2AFailure.EXCHANGE_FAILED, binding=b)
     assert len(world.endpoint.calls) == calls
     assert rig.upstream.calls == []

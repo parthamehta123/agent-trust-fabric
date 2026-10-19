@@ -200,6 +200,7 @@ class TestBundleWiring:
             "ATF_BUNDLE_ISSUER": "atf-bundle-publisher",
             "ATF_BUNDLE_PUBLIC_JWK_PATH": str(tmp_path / "k.jwk"),
             "ATF_BUNDLE_PATH": str(tmp_path / "bundle.jws"),
+            "ATF_TRUSTED_IDP_ORIGINS": "https://idp.example.test",
         }
         assert status(build_handler(env)(event(), ctx())) == 401  # wired, real pipeline
 

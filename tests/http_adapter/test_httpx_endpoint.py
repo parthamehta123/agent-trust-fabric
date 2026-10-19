@@ -206,3 +206,19 @@ class TestCaBundle:
             p.write_bytes(content)
         with pytest.raises(ValueError, match="ca bundle"):
             HttpxTokenEndpoint(ca_bundle_path=str(p))
+
+
+class TestJwksMediaType:
+    """ADR-0027 review #4: a JWKS may be served as application/jwk-set+json (RFC 7517 §8.5)."""
+
+    def test_jwk_set_media_type_accepted(self) -> None:
+        resp = httpx.Response(
+            200, content=b'{"keys": []}', headers={"content-type": "application/jwk-set+json"}
+        )
+        assert endpoint(lambda req: resp).get_json(URL) == {"keys": []}
+
+    def test_token_endpoint_still_json_only(self) -> None:
+        resp = httpx.Response(
+            200, content=b'{"a": 1}', headers={"content-type": "application/jwk-set+json"}
+        )
+        assert endpoint(lambda req: resp).post_form(URL, {}).body == {}

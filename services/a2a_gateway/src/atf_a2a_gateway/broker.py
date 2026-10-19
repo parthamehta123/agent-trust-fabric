@@ -30,6 +30,7 @@ from trustkit.profiles import (
 from trustkit.scanning import ContentScanner, Direction, Verdict, scan_with_policy
 from trustkit_policy.bundle import LoadedBundle
 from trustkit_policy.grants import AgentGrant
+from trustkit_policy.idps import TrustedIdps
 from trustkit_policy.runtime import delegate_decision, user_scopes, visible_card
 
 
@@ -73,6 +74,8 @@ class BrokerConfig:
     target, ``idp.resource_*``, ``target`` and ``server_id`` come from the target's grant."""
     target_scopes: frozenset[str]
     """Scopes requested for the target agent's API (intersected with the user's T2 scopes)."""
+    trusted_idps: TrustedIdps
+    """A target's T2 issuer becomes a token endpoint here: only on a trusted IdP (ADR-0027 #1)."""
     max_message_chars: int = 16_000
 
 
@@ -181,6 +184,8 @@ class A2ABroker:
         ingress = grant.ingress
         if ingress is None:
             raise ValueError("target has no T2 binding")
+        if not self._cfg.trusted_idps.allows(ingress.t2_issuer, ingress.t2_jwks_uri):
+            raise ValueError("target's T2 issuer is not a trusted IdP")
         base = dict(self._cfg.egress_base)
         doc = {
             **base,

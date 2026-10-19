@@ -128,7 +128,7 @@ def _demo(http: httpx.Client) -> None:
 
     # --- Act 2: the thief ------------------------------------------------------------------
     scene(
-        "[2] Replay the token as a plain Bearer token",
+        "[2] Send the stolen token with no proof",
         "The token is genuine: valid signature, right audience, not expired. But it is bound, "
         "and a bound token without a proof is refused (no downgrade).",
     )

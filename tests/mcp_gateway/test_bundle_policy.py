@@ -14,6 +14,7 @@ from tests.exchange.conftest import (
     AGENT_CLIENT,
     BASE,
     BOB,
+    TRUSTED_IDPS,
     World,
     alpha_grant,
     beta_grant,
@@ -56,20 +57,32 @@ def headers(world: World, agent: str = AGENT_CLIENT, t2: str | None = None) -> d
 
 class TestBinder:
     def test_binds_from_bundle(self, world: World) -> None:
-        bind = bundle_binder(lambda: egress_bundle(), workload_v(world), world.jwks, world.clock)
+        bind = bundle_binder(
+            lambda: egress_bundle(),
+            workload_v(world),
+            world.jwks,
+            world.clock,
+            trusted_idps=TRUSTED_IDPS,
+        )
         b = bind(headers(world))
         assert (b.agent_client_id, b.allowed_scopes) == (AGENT_CLIENT, frozenset({"tickets.read"}))
 
     @pytest.mark.security
     def test_no_bundle_is_policy_unavailable(self, world: World) -> None:
-        bind = bundle_binder(lambda: None, workload_v(world), world.jwks, world.clock)
+        bind = bundle_binder(
+            lambda: None, workload_v(world), world.jwks, world.clock, trusted_idps=TRUSTED_IDPS
+        )
         with pytest.raises(PolicyUnavailableError):
             bind(headers(world))
 
     @pytest.mark.security
     def test_agent_not_in_bundle(self, world: World) -> None:
         bind = bundle_binder(
-            lambda: egress_bundle(beta_grant()), workload_v(world), world.jwks, world.clock
+            lambda: egress_bundle(beta_grant()),
+            workload_v(world),
+            world.jwks,
+            world.clock,
+            trusted_idps=TRUSTED_IDPS,
         )
         with pytest.raises(ActorBindingError) as e:
             bind(headers(world))
@@ -78,7 +91,9 @@ class TestBinder:
     @pytest.mark.security
     def test_confused_deputy_still_refused(self, world: World) -> None:
         both = egress_bundle(alpha_grant(), beta_grant())
-        bind = bundle_binder(lambda: both, workload_v(world), world.jwks, world.clock)
+        bind = bundle_binder(
+            lambda: both, workload_v(world), world.jwks, world.clock, trusted_idps=TRUSTED_IDPS
+        )
         with pytest.raises(ActorBindingError) as e:
             bind(headers(world, AGENT_BETA_CLIENT))  # beta spending alpha's T2
         assert e.value.reason is ActorBindingReason.SUBJECT_INVALID
@@ -87,14 +102,26 @@ class TestBinder:
         "h", [{}, {"authorization": "Bearer x"}, {"x-subject-token": "y"}, {"authorization": "x"}]
     )
     def test_missing_credentials(self, world: World, h: dict[str, str]) -> None:
-        bind = bundle_binder(lambda: egress_bundle(), workload_v(world), world.jwks, world.clock)
+        bind = bundle_binder(
+            lambda: egress_bundle(),
+            workload_v(world),
+            world.jwks,
+            world.clock,
+            trusted_idps=TRUSTED_IDPS,
+        )
         with pytest.raises(ValueError, match="credentials"):
             bind(h)
 
 
 class TestAuthorizer:
     def binding(self, world: World, user: str | None = None) -> Any:
-        bind = bundle_binder(lambda: egress_bundle(), workload_v(world), world.jwks, world.clock)
+        bind = bundle_binder(
+            lambda: egress_bundle(),
+            workload_v(world),
+            world.jwks,
+            world.clock,
+            trusted_idps=TRUSTED_IDPS,
+        )
         return bind(headers(world, t2=mint_t2(world, user) if user else None))
 
     def test_allowed_returns_intersection(self, world: World) -> None:
@@ -153,7 +180,9 @@ class TestChains:
     def bind_b(self, world: World, bundle: Any) -> Any:
         from tests.exchange.test_chains import token_for_b
 
-        bind = bundle_binder(lambda: bundle, workload_v(world), world.jwks, world.clock)
+        bind = bundle_binder(
+            lambda: bundle, workload_v(world), world.jwks, world.clock, trusted_idps=TRUSTED_IDPS
+        )
         return bind(headers(world, AGENT_BETA_CLIENT, t2=token_for_b(world)))
 
     def test_b_binds_with_prior_actor(self, world: World) -> None:
@@ -176,3 +205,23 @@ class TestChains:
         b = self.bind_b(world, state["b"])
         state["b"] = self.chain_bundle(delegation={})
         assert authorize(b, server()) is None
+
+
+@pytest.mark.security
+def test_agent_with_untrusted_t2_issuer_is_not_allowed(world: World) -> None:
+    """ADR-0027 review #1: the agent's own T2 issuer must be on a trusted IdP."""
+    rogue = {
+        "t2_issuer": "https://idp.attacker.example/oauth2/a",
+        "t2_audience": "api://agent-alpha",
+        "t2_jwks_uri": "https://idp.attacker.example/oauth2/a/v1/keys",
+    }
+    bind = bundle_binder(
+        lambda: egress_bundle(alpha_grant(ingress=rogue)),
+        workload_v(world),
+        world.jwks,
+        world.clock,
+        trusted_idps=TRUSTED_IDPS,
+    )
+    with pytest.raises(ActorBindingError) as e:
+        bind(headers(world))
+    assert e.value.reason is ActorBindingReason.AGENT_NOT_ALLOWED

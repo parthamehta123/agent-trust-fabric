@@ -492,6 +492,19 @@ run "trail_covers_every_security_relevant_write" {
 }
 
 
+# ------------------------------------------------------- ADR-0027 review #1: trusted IdPs
+
+run "trusted_idp_origin_reaches_registry_and_bundle_readers" {
+  command = plan
+  assert {
+    condition = alltrue([
+      for svc in ["agent-registry", "mcp-gateway", "a2a-gateway", "inference-gateway", "knowledge-server"] :
+      output.service_environment[svc]["ATF_TRUSTED_IDP_ORIGINS"] == "https://example.okta.com"
+    ])
+    error_message = "The registry and every bundle reader trust exactly the IdP's origin (no path)."
+  }
+}
+
 # ------------------------------------------------------------------ ADR-0028: DPoP
 
 run "dpop_nonce_key_reaches_exactly_the_data_plane_gateways" {

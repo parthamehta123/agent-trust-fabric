@@ -5,7 +5,8 @@
   so it becomes a deny).
 * Connect and total timeouts.
 * Response bodies above ``max_response_bytes`` are discarded unread (``body == {}``).
-* JSON is parsed only for ``application/json`` responses whose top level is an object.
+* JSON is parsed only for ``application/json`` responses whose top level is an object (a JWKS may
+  also be ``application/jwk-set+json``, RFC 7517 §8.5).
 * No retries here. Retry policy belongs to the exchanger.
 * Connect errors and timeouts raise ``TransportError``. Everything else yields an ``HttpResult``.
 """
@@ -24,6 +25,8 @@ from trustkit.exchange import HttpResult, TransportError
 DEFAULT_CONNECT_TIMEOUT_S: Final = 2.0
 DEFAULT_TOTAL_TIMEOUT_S: Final = 5.0
 DEFAULT_MAX_RESPONSE_BYTES: Final = 65_536
+JSON: Final = frozenset({"application/json"})
+JWKS_TYPES: Final = frozenset({"application/json", "application/jwk-set+json"})
 
 
 def tls_context(ca_bundle_path: str | None) -> ssl.SSLContext | bool:
@@ -81,8 +84,10 @@ class HttpxTokenEndpoint:
         """For ``JwksKeyResolver.fetch``. Raises ``TransportError`` unless 200 + JSON object."""
         _require_https(url)
         try:
-            with self._client.stream("GET", url) as resp:
-                body = self._read_json_object(resp)
+            with self._client.stream(
+                "GET", url, headers={"accept": ", ".join(sorted(JWKS_TYPES))}
+            ) as resp:
+                body = self._read_json_object(resp, JWKS_TYPES)
                 status = resp.status_code
         except httpx.HTTPError:
             raise TransportError("endpoint unreachable") from None
@@ -93,9 +98,11 @@ class HttpxTokenEndpoint:
     def close(self) -> None:
         self._client.close()
 
-    def _read_json_object(self, resp: httpx.Response) -> dict[str, Any] | None:
+    def _read_json_object(
+        self, resp: httpx.Response, accept: frozenset[str] = JSON
+    ) -> dict[str, Any] | None:
         ctype = resp.headers.get("content-type", "").split(";")[0].strip().lower()
-        if ctype != "application/json":
+        if ctype not in accept:
             return None
         declared = resp.headers.get("content-length")
         if declared is not None and declared.isdigit() and int(declared) > self._max:

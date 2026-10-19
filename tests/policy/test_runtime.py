@@ -9,6 +9,7 @@ from typing import Any
 
 import pytest
 
+from tests.exchange.conftest import TRUSTED_IDPS
 from tests.policy.helpers import loaded_bundle, make_grant
 from tests.policy.test_bundle import ISS, SIGNER, MemSource, bundle
 from trustkit.jwt import VerifiedToken
@@ -295,7 +296,11 @@ class TestActorPolicies:
             return FakeResolver()
 
         policies = actor_policies_from_bundle(
-            loaded, jwks, scopes_for=lambda g: frozenset().union(*g.tools.values()), now=lambda: T
+            loaded,
+            jwks,
+            scopes_for=lambda g: frozenset().union(*g.tools.values()),
+            now=lambda: T,
+            trusted_idps=TRUSTED_IDPS,
         )
         assert set(policies) == {AGENT}
         assert policies[AGENT].allowed_scopes == frozenset({"tickets.read"})
@@ -305,14 +310,22 @@ class TestActorPolicies:
     def test_expired_grant_excluded(self) -> None:
         loaded = loaded_bundle(make_grant(AGENT, ingress=ingress(), expires_at=T))
         policies = actor_policies_from_bundle(
-            loaded, lambda _: FakeResolver(), scopes_for=lambda g: frozenset({"x"}), now=lambda: T
+            loaded,
+            lambda _: FakeResolver(),
+            scopes_for=lambda g: frozenset({"x"}),
+            now=lambda: T,
+            trusted_idps=TRUSTED_IDPS,
         )
         assert policies == {}
 
     def test_scopes_for_empty_excluded(self) -> None:
         loaded = loaded_bundle(make_grant(AGENT, ingress=ingress()))
         policies = actor_policies_from_bundle(
-            loaded, lambda _: FakeResolver(), scopes_for=lambda g: frozenset(), now=lambda: T
+            loaded,
+            lambda _: FakeResolver(),
+            scopes_for=lambda g: frozenset(),
+            now=lambda: T,
+            trusted_idps=TRUSTED_IDPS,
         )
         assert policies == {}
 
@@ -488,3 +501,30 @@ class TestAuthorizeTool:
             frozenset(),
         )
         assert not self.run({"kb.public.read"}, set())[0].allowed
+
+
+@pytest.mark.security
+def test_untrusted_t2_issuer_leaves_the_agent_out() -> None:
+    """ADR-0027 review #1: a grant whose T2 issuer isn't on a trusted IdP never gets a validator,
+    so the agent is unknown to ``bind_actor`` (fails closed)."""
+    rogue = {
+        "t2_issuer": "https://idp.attacker.example/oauth2/a",
+        "t2_audience": "api://agent-alpha",
+        "t2_jwks_uri": "https://idp.attacker.example/oauth2/a/v1/keys",
+    }
+    loaded = loaded_bundle(make_grant(AGENT, ingress=rogue))
+    fetched: list[str] = []
+
+    def jwks(uri: str) -> Any:
+        fetched.append(uri)
+        return FakeResolver()
+
+    policies = actor_policies_from_bundle(
+        loaded,
+        jwks,
+        scopes_for=lambda g: frozenset({"x"}),
+        now=lambda: T,
+        trusted_idps=TRUSTED_IDPS,
+    )
+    assert policies == {}
+    assert fetched == []  # and nothing is ever fetched from it

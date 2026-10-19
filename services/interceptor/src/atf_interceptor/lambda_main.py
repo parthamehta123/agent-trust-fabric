@@ -43,6 +43,7 @@ from trustkit.signing import KeySigner
 from trustkit_aws.s3_bundles import s3_source_factory
 from trustkit_aws.signers import make_signer_factory
 from trustkit_http.endpoint import HttpxTokenEndpoint
+from trustkit_policy.idps import TrustedIdps
 from trustkit_policy.runtime import policy_from_env
 
 __all__ = ["bind_gateway_id", "build_handler", "handler", "make_signer_factory"]
@@ -145,6 +146,7 @@ def build_handler(
             if "ATF_BUNDLE_ISSUER" in env
             else (lambda: None)
         )
+        trusted_idps = TrustedIdps.from_env(env) if "ATF_BUNDLE_ISSUER" in env else None
         deps = InterceptorDeps(
             profiles=lambda: registry,
             exchanger=exchanger,
@@ -154,6 +156,7 @@ def build_handler(
             now=lambda: int(time.time()),
             monotonic=time.monotonic,
             policy=policy,
+            trusted_idps=trusted_idps,
         )
         return make_handler(deps)
     except Exception:  # noqa: BLE001 - any wiring failure -> deny-all handler (fail closed)

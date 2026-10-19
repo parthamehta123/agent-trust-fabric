@@ -24,6 +24,7 @@ from trustkit.profiles import ScannerFailureMode
 from trustkit.signing import es256_public_jwk
 from trustkit_policy.bundle import BundleHolder, BundleVerifier, LoadedBundle, RefreshOutcome
 from trustkit_policy.grants import CLASSIFICATIONS, AgentGrant, classification_rank
+from trustkit_policy.idps import TrustedIdps
 from trustkit_policy.pdp import DecisionRequest, PolicyDecision, Resource
 from trustkit_policy.schema import Action, ResourceType
 from trustkit_policy.sources import BundleSource, FileBundleSource
@@ -94,19 +95,23 @@ def actor_policies_from_bundle(
     *,
     scopes_for: Callable[[AgentGrant], frozenset[str]],
     now: Callable[[], int],
+    trusted_idps: TrustedIdps,
 ) -> dict[str, AgentPolicy]:
     """``{client_id: AgentPolicy}`` for ``bind_actor``: only unexpired grants that have a T2
-    binding and a non-empty ``scopes_for(grant)``."""
+    binding on a trusted IdP (``trusted_idps``, deployment config) and a non-empty
+    ``scopes_for(grant)``. An untrusted binding leaves the agent out: it fails closed as unknown."""
     t = now()
     out: dict[str, AgentPolicy] = {}
     for agent_id in loaded.bundle.agents:
         grant = loaded.grant(agent_id, t)
         if grant is None or grant.ingress is None:
             continue
+        b = grant.ingress
+        if not trusted_idps.allows(b.t2_issuer, b.t2_jwks_uri):
+            continue
         scopes = scopes_for(grant)
         if not scopes:
             continue
-        b = grant.ingress
         out[agent_id] = AgentPolicy(
             TokenValidator(
                 ValidationPolicy(

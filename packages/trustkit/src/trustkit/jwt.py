@@ -142,10 +142,16 @@ def _import_public_jwk(jwk: Any) -> tuple[str, PublicKey] | None:
     if not isinstance(kid, str) or not kid:
         return None
     if _PRIVATE_JWK_MEMBERS & jwk.keys():
-        return (
-            None  # a JWKS publishing private/symmetric material is misconfigured: trust none of it
-        )
+        # Private or symmetric material published: that key is compromised, so it is never
+        # trusted. Only this entry is dropped: refusing the whole document would keep the
+        # previous set, which still contains the key (ADR-0027 review #5).
+        return None
     if jwk.get("use", "sig") != "sig":
+        return None
+    ops = jwk.get("key_ops")
+    if ops is not None and (not isinstance(ops, list) or "verify" not in ops):
+        return None  # RFC 7517 §4.3: a key not meant for verification isn't used for it (#6)
+    if "alg" in jwk and jwk["alg"] not in ALLOWED_ALGORITHMS:
         return None
     try:
         if jwk.get("kty") == "RSA":
@@ -162,10 +168,12 @@ def _import_public_jwk(jwk: Any) -> tuple[str, PublicKey] | None:
     return None
 
 
-def _parse_jwks(doc: Any) -> dict[str, PublicKey]:
+def _parse_jwks(doc: Any) -> dict[str, PublicKey] | None:
+    """``None`` when ``doc`` isn't a JWK Set at all (RFC 7517 §5: ``keys`` is required): that is a
+    failed fetch, not an IdP that revoked everything (ADR-0027 review #3)."""
     entries = doc.get("keys") if isinstance(doc, dict) else None
     if not isinstance(entries, list):
-        return {}
+        return None
     imported = [k for k in map(_import_public_jwk, entries) if k is not None]
     counts = Counter(kid for kid, _ in imported)
     return {kid: key for kid, key in imported if counts[kid] == 1}  # duplicate kids: trust neither
@@ -186,51 +194,81 @@ class JwksKeyResolver:
       most one refresh per ``min_refresh_interval_s``, a single shared budget, so an attacker
       spraying random kids or forged signatures can't turn us into a JWKS-fetch amplifier.
     * Failure: the last good key set is kept for availability, but never beyond
-      ``max_staleness_s`` since the last *successful* fetch. After that, nothing resolves.
+      ``max_staleness_s`` since the last *successful* fetch. After that, nothing resolves. A
+      response that isn't a JWK Set (no ``keys`` array) is a failure, not an empty set.
+
+    Concurrency (ADR-0027 review #2): the fetch never runs under the lock, and at most one is in
+    flight. Callers whose kid is already known keep using the current set meanwhile; callers that
+    need the result (unknown kid, a rotated key, nothing loaded yet) wait for that one fetch.
     """
 
     fetch: Callable[[], Mapping[str, Any]]
     min_refresh_interval_s: float = 60
     max_key_age_s: float = 300
     max_staleness_s: float = 86_400
+    max_wait_s: float = 10
+    """Upper bound on waiting for another caller's fetch (the adapter has its own timeouts)."""
     now: Callable[[], float] = time.monotonic
     _keys: dict[str, PublicKey] = field(default_factory=dict, init=False, repr=False)
     _last_attempt: float | None = field(default=None, init=False, repr=False)
     _last_success: float | None = field(default=None, init=False, repr=False)
+    _in_flight: threading.Event | None = field(default=None, init=False, repr=False)
     _lock: threading.Lock = field(default_factory=threading.Lock, init=False, repr=False)
 
     def resolve(self, kid: str) -> PublicKey | None:
         with self._lock:
             t = self.now()
-            if self._last_success is None or t - self._last_success >= self.max_key_age_s:
-                self._refresh_if_allowed(t)
-            if kid not in self._keys:
-                self._refresh_if_allowed(t)
-            if self._last_success is None or t - self._last_success > self.max_staleness_s:
+            due = self._last_success is None or t - self._last_success >= self.max_key_age_s
+            usable = kid in self._keys and self._fresh(t)
+        if due or not usable:
+            self._refresh(wait=not usable)
+        return self._current(kid)
+
+    def resolve_rotated(self, kid: str, rejected: PublicKey) -> PublicKey | None:
+        self._refresh(wait=True)
+        fresh = self._current(kid)
+        if fresh is None or fresh.as_dict(private=False) == rejected.as_dict(private=False):
+            return None
+        return fresh
+
+    def _fresh(self, t: float) -> bool:
+        return self._last_success is not None and t - self._last_success <= self.max_staleness_s
+
+    def _current(self, kid: str) -> PublicKey | None:
+        with self._lock:
+            if not self._fresh(self.now()):
                 self._keys = {}
             return self._keys.get(kid)
 
-    def resolve_rotated(self, kid: str, rejected: PublicKey) -> PublicKey | None:
+    def _refresh(self, *, wait: bool) -> None:
+        """Start a refresh if the shared budget allows and none is in flight; otherwise, when
+        ``wait``, join the one in flight. Never fetches while holding the lock."""
         with self._lock:
             t = self.now()
-            self._refresh_if_allowed(t)
-            if self._last_success is None or t - self._last_success > self.max_staleness_s:
-                self._keys = {}
-            fresh = self._keys.get(kid)
-            if fresh is None or fresh.as_dict(private=False) == rejected.as_dict(private=False):
-                return None
-            return fresh
-
-    def _refresh_if_allowed(self, t: float) -> None:
-        if self._last_attempt is not None and t - self._last_attempt < self.min_refresh_interval_s:
+            flight, owner = self._in_flight, False
+            allowed = (
+                self._last_attempt is None or t - self._last_attempt >= self.min_refresh_interval_s
+            )
+            if flight is None and allowed:
+                flight = self._in_flight = threading.Event()
+                self._last_attempt, owner = t, True
+        if flight is None:
             return
-        self._last_attempt = t
+        if not owner:
+            if wait:
+                flight.wait(self.max_wait_s)
+            return
+        keys: dict[str, PublicKey] | None = None
         try:
-            doc = self.fetch()
-        except Exception:  # noqa: BLE001 - adapter failure of any kind == failed refresh; keep last good set
-            return
-        self._keys = _parse_jwks(doc)
-        self._last_success = t
+            keys = _parse_jwks(self.fetch())
+        except Exception:  # noqa: BLE001, S110 - adapter failure of any kind == failed refresh
+            pass
+        finally:
+            with self._lock:
+                if keys is not None:
+                    self._keys, self._last_success = keys, t
+                self._in_flight = None
+            flight.set()
 
 
 # ----------------------------------------------------------------------------- validation
@@ -263,6 +301,13 @@ def _b64url_json(segment: str) -> Any:
         return json.loads(raw)
     except (binascii.Error, ValueError, RecursionError):
         raise TokenValidationError(Reason.MALFORMED, "segment encoding") from None
+
+
+def _media_type(typ: str) -> str:
+    """RFC 7515 §4.1.9: ``typ`` is a media type whose ``application/`` prefix may be omitted, so
+    ``at+jwt`` and ``application/at+jwt`` are the same (RFC 9068 §4; ADR-0027 review #4)."""
+    t = typ.strip().lower()
+    return t if "/" in t else f"application/{t}"
 
 
 def _is_int(v: Any) -> bool:
@@ -306,7 +351,7 @@ class TokenValidator:
 
         if p.expected_typ is not None:
             typ = header.get("typ")
-            if not isinstance(typ, str) or typ.lower() != p.expected_typ.lower():
+            if not isinstance(typ, str) or _media_type(typ) != _media_type(p.expected_typ):
                 raise TokenValidationError(Reason.WRONG_TYP)
 
         kid = header.get("kid")
@@ -348,6 +393,10 @@ class TokenValidator:
             alg in _ALG_EC_CURVE and key.as_dict().get("crv") != _ALG_EC_CURVE[alg]
         ):
             raise TokenValidationError(Reason.ALG_NOT_ALLOWED, "key type does not match alg")
+        if key.as_dict(private=False).get("alg", alg) != alg:
+            # RFC 8725 §3.1: a key published for one algorithm is used with that one only. Enforced
+            # here, not left to the JOSE library (ADR-0027 review #6).
+            raise TokenValidationError(Reason.ALG_NOT_ALLOWED, "key is published for another alg")
         try:
             return jose_jwt.decode(token, key, algorithms=[alg])
         except BadSignatureError:

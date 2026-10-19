@@ -30,6 +30,7 @@ from joserfc.jwk import RSAKey
 from tests.conftest import NOW, Mint, StaticKeys, good_claims
 from trustkit.audit import AuditEvent, Decision
 from trustkit.jwt import TokenValidator, ValidationPolicy
+from trustkit_policy.idps import TrustedIdps
 
 AGENT = "0oa-agent-alpha"
 T0 = dt.datetime(2026, 10, 13, 12, 0, tzinfo=dt.UTC)
@@ -41,6 +42,9 @@ CAROL = Principal("carol", frozenset({SECURITY_GROUP}))
 EVE = Principal("eve", frozenset({"team-beta"}))
 FRANK = Principal("frank", frozenset({"team-alpha", "team-beta"}))
 MALLORY = Principal("mallory", frozenset({"team-alpha", APPROVERS_GROUP, SECURITY_GROUP}))
+
+
+REGISTRY_IDPS = TrustedIdps(frozenset({"https://idp.example"}))
 
 
 def spec(**over: Any) -> AgentSpec:
@@ -77,7 +81,9 @@ class Clock:
 class Env:
     def __init__(self) -> None:
         self.store, self.audit, self.clock = InMemoryRegistryStore(), Sink(), Clock()
-        self.svc = RegistryService(self.store, self.audit, now=self.clock)
+        self.svc = RegistryService(
+            self.store, self.audit, trusted_idps=REGISTRY_IDPS, now=self.clock
+        )
 
     def approved(self, s: AgentSpec | None = None, author: Principal = DAVE) -> AgentVersion:
         v = self.svc.create_draft(author, AGENT, s or spec())
@@ -442,7 +448,7 @@ class TestAuditAndRaces:
             def put_new(self, v: AgentVersion) -> None:
                 raise StoreConflictError
 
-        env.svc = RegistryService(Racy(), env.audit, now=env.clock)
+        env.svc = RegistryService(Racy(), env.audit, trusted_idps=REGISTRY_IDPS, now=env.clock)
         fails(Failure.CONFLICT, env.svc.create_draft, DAVE, AGENT, spec())
 
 
@@ -469,14 +475,14 @@ class TestStoreOutage:
     def test_read_outage_is_unavailable(self, env: Env) -> None:
         store = self.Down()
         store.reads_fail = True
-        svc = RegistryService(store, env.audit, now=env.clock)
+        svc = RegistryService(store, env.audit, trusted_idps=REGISTRY_IDPS, now=env.clock)
         fails(Failure.UNAVAILABLE, svc.history, BOB, AGENT)
         fails(Failure.UNAVAILABLE, svc.create_draft, DAVE, AGENT, spec())
 
     def test_write_outage_is_unavailable(self, env: Env) -> None:
         store = self.Down()
         store.writes_fail = True
-        svc = RegistryService(store, env.audit, now=env.clock)
+        svc = RegistryService(store, env.audit, trusted_idps=REGISTRY_IDPS, now=env.clock)
         fails(Failure.UNAVAILABLE, svc.create_draft, DAVE, AGENT, spec())
 
 
@@ -581,3 +587,46 @@ class TestCardSpec:
 
         with pytest.raises(ValidationError, match="card endpoint"):
             spec(card={"endpoint": endpoint})
+
+
+ROGUE = {
+    "t2_issuer": "https://idp.attacker.example/oauth2/a",
+    "t2_audience": "api://agent-alpha",
+    "t2_jwks_uri": "https://idp.attacker.example/oauth2/a/v1/keys",
+}
+TRUSTED_T2 = {
+    "t2_issuer": "https://idp.example/oauth2/a",
+    "t2_audience": "api://agent-alpha",
+    "t2_jwks_uri": "https://idp.example/oauth2/a/v1/keys",
+}
+
+
+@pytest.mark.security
+class TestTrustedIdps:
+    """ADR-0027 review #1: an agent's T2 issuer must be on an IdP the deployment trusts."""
+
+    def test_draft_with_an_untrusted_issuer_is_refused(self, env: Env) -> None:
+        fails(Failure.INVALID, env.svc.create_draft, DAVE, AGENT, spec(ingress=ROGUE))
+
+    def test_draft_with_keys_elsewhere_is_refused(self, env: Env) -> None:
+        keys_elsewhere = {**TRUSTED_T2, "t2_jwks_uri": "https://keys.attacker.example/v1/keys"}
+        fails(Failure.INVALID, env.svc.create_draft, DAVE, AGENT, spec(ingress=keys_elsewhere))
+
+    def test_update_to_an_untrusted_issuer_is_refused(self, env: Env) -> None:
+        v = env.svc.create_draft(DAVE, AGENT, spec(ingress=TRUSTED_T2))
+        fails(Failure.INVALID, env.svc.update_draft, DAVE, AGENT, v.version, spec(ingress=ROGUE))
+
+    def test_trusted_issuer_is_approved(self, env: Env) -> None:
+        assert env.approved(spec(ingress=TRUSTED_T2)).state is State.APPROVED
+
+    def test_draft_from_before_the_check_cannot_be_approved(self, env: Env) -> None:
+        """A rogue draft already in review when the check shipped is refused at approval."""
+        lax = RegistryService(
+            env.store,
+            env.audit,
+            trusted_idps=TrustedIdps(frozenset({"https://idp.attacker.example"})),
+            now=env.clock,
+        )
+        v = lax.create_draft(DAVE, AGENT, spec(ingress=ROGUE))
+        lax.submit(DAVE, AGENT, v.version)
+        fails(Failure.INVALID, env.svc.approve, BOB, AGENT, v.version, ApprovalRole.APPROVER)

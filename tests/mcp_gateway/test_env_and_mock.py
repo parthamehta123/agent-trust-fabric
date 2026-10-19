@@ -35,6 +35,7 @@ def env(tmp_path: pathlib.Path) -> Iterator[dict[str, str]]:
             "ATF_ENV": "local",
             "ATF_CA_BUNDLE": str(r.ca_cert),
             "ATF_DDB_TABLE": "mcp-servers",
+            "ATF_TRUSTED_IDP_ORIGINS": "https://mock-idp:8443",
             "ATF_EGRESS_PROFILE_PATH": str(r.out_dir / "mcp-egress.json"),
             "ATF_TOOL_AUTHORITIES_PATH": str(r.out_dir / "tool-authorities.json"),
             "ATF_LOCAL_KEYS_DIR": str(r.out_dir / "client-keys"),

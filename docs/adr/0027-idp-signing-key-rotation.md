@@ -84,8 +84,8 @@ Adopted **B + C + D + E** (accepted 2026-10-18):
 
 - **Positive:**
   - An abrupt rotation recovers in about a minute.
-  - A revoked IdP key stops being trusted within about 5 minutes without operator action, and
-    immediately with D.
+  - A revoked IdP key stops being trusted within about 5 minutes without operator action while
+    the JWKS URL is reachable, and immediately with D. (If refreshes fail, see the self-review.)
   - The test IdP behaves like a real one.
 - **Negative / accepted:**
   - About 12 extra JWKS fetches per hour per validator per issuer.
@@ -98,3 +98,29 @@ Adopted **B + C + D + E** (accepted 2026-10-18):
 - **Follow-ups:** implement B, C and E in one PR with tests; D in the runbook; TM-ING-03 and
   RR-9 in the threat model; then verify on the sandbox apply that Okta key rotation (with a new
   `kid`) is picked up without errors.
+
+## RFC self-review (2026-10-19)
+
+The key resolution and token validation path, reviewed against RFC 7517/7518 (JWK, JWA),
+RFC 8414 and OIDC Discovery (where keys come from), RFC 8725 (JWT BCP) and RFC 9068 (access-token
+profile). Every finding has a regression test; no validator accepted a forged token as configured.
+
+| # | Severity | Finding | Fix |
+|---|---|---|---|
+| 1 | **Medium (security)** | An agent's registry spec could name **any** T2 issuer and **any** JWKS URL. One approval (standard tier) could make the gateways accept user tokens that the agent's owner signed, with any `sub` and scopes. The IdP re-checks them on token exchange, but tools with delegation `none` don't exchange. The gateways also fetched that URL. Reproduced. | `ATF_TRUSTED_IDP_ORIGINS` (deployment config, derived in IaC from the IdP's base URL). The issuer must be on a trusted origin, and the JWKS URL on the issuer's origin and under its path (RFC 8414 §2: `jwks_uri` is the issuer's). Enforced at registry draft, update and approval; when gateways build validators from the bundle (the agent is left out: unknown, fail closed); and before the A2A broker uses a callee's issuer as a token endpoint. **TM-CP-08**. |
+| 2 | Medium-low (availability) | The JWKS fetch ran **under the resolver lock**: a slow IdP stalled every validation in the process for up to the 5 s timeout, on every proactive refresh (every 5 min since this ADR). Reproduced: a known-`kid` request waited 1.9 s. | Fetch outside the lock with at most one in flight. Known `kid`s keep the current set meanwhile, which adds at most one fetch to the revocation window. An unknown `kid`, a rotated key, or a cold cache waits for that one fetch. |
+| 3 | Low (availability) | A 200 without a `keys` array was a "successful" empty set: every token was refused until the next permitted refresh (≥ 60 s). Reproduced. | Not a JWK Set (RFC 7517 §5: `keys` is required) is a failed fetch, so the last good set is kept. `{"keys": []}` is still honoured: that is what revoking every key looks like. |
+| 4 | Low (interop) | `typ: application/at+jwt` was refused, though RFC 9068 §4 and RFC 7515 §4.1.9 make it the same as `at+jwt`. A JWKS served as `application/jwk-set+json` (RFC 7517 §8.5) was a failed fetch. | `typ` compared as a media type (the `application/` prefix is optional); the JWKS fetch accepts both media types. The token endpoint still accepts only `application/json`. |
+| 5 | Docs | This ADR and RR-9 said a revoked key stops being trusted within 5 minutes. That holds only while the JWKS URL is reachable; failed refreshes keep the last good set for up to 24 h. A code comment said a JWKS publishing private material is distrusted entirely; the code drops just that key. | Wording corrected. The 24 h fallback stays deliberate (RR-9). The per-key behaviour is the right one: rejecting the whole document would keep the previous set, which still holds the compromised key. |
+| 6 | Test gap | A key's own `alg` (RFC 8725 §3.1: one key, one algorithm) and `key_ops` were enforced only incidentally by the JOSE library, reported as `malformed`. | Enforced in `trustkit.jwt` (`alg_not_allowed`; keys whose `key_ops` exclude `verify` aren't imported) and pinned by tests. |
+
+**Verified correct (no change):**
+- Header parameters that pick their own key (`jku`, `x5u`, `jwk`, `x5c`) and `crit` are refused.
+- `none` and HMAC are never allowed, and the key type and curve must match `alg`.
+- RSA keys need at least 2048 bits. Private, symmetric and `enc` keys are ignored, and a duplicate `kid` means neither key is trusted (RFC 7517 §4.5).
+- Every validator requires an explicit `typ`, which prevents cross-JWT confusion (RFC 8725 §2.8, §3.11).
+- `iss` must match exactly and `aud` is checked (§3.8, §3.9). Clock leeway is at most 120 s.
+- NumericDate must be an integer. That is stricter than RFC 7519 §2, deliberately; Okta sends integers.
+- JWKS fetching: HTTPS only, no redirects, TLS always verified, a 64 KB cap, and a monotonic clock.
+- The refetch budget is shared (no amplification).
+

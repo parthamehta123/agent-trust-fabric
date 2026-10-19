@@ -56,7 +56,7 @@ agent's audience.
 | **Key hygiene** | rotation and revocation windows decided deliberately: a revoked IdP key stops being trusted in ≤ 5 min ([ADR-0027](docs/adr/0027-idp-signing-key-rotation.md)) |
 | **Supply chain** | digest-pinned images, SHA-pinned actions, signature-verified IaC tools, checkov sandboxed, a 14-day minimum release age, Dependabot with cooldown |
 | **Infrastructure as code** | ECS Fargate behind three internal ALBs by plane, AgentCore Gateway with a Lambda interceptor, Verified Access for admin, CloudTrail data events, GitHub OIDC roles with exact subjects: all `tofu test`ed |
-| **Traceability** | 28 ADRs; 55 STRIDE threats, each traced to tests; 9 accepted residual risks; 14 documented emulator divergences |
+| **Traceability** | 28 ADRs; 57 STRIDE threats, each traced to tests; 10 accepted residual risks; 14 documented emulator divergences |
 
 ## Documents
 

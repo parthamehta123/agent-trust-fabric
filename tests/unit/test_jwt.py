@@ -8,6 +8,8 @@ from __future__ import annotations
 import hashlib
 import hmac
 import json
+import threading
+import time
 from typing import Any
 
 import pytest
@@ -551,3 +553,133 @@ def test_default_revocation_window_is_five_minutes(rsa_key: RSAKey, ec_key: ECKe
     assert r.resolve("rsa-1") is not None
     clock.t += 2
     assert r.resolve("rsa-1") is None
+
+
+class TestRfcReview:
+    """ADR-0027 RFC self-review (2026-10-19): one regression test per finding in this module."""
+
+    # #2: the JWKS fetch never runs under the lock, and at most one is in flight.
+
+    @staticmethod
+    def slow(
+        doc: dict[str, Any], gate: threading.Event, started: threading.Event, instant: int = 1
+    ) -> Any:
+        """A fetch that blocks on ``gate`` after its first ``instant`` calls (warm-up)."""
+        calls = {"n": 0}
+
+        def fetch() -> dict[str, Any]:
+            calls["n"] += 1
+            if calls["n"] > instant:
+                started.set()
+                gate.wait(5)
+            return doc
+
+        return fetch, calls
+
+    @pytest.mark.security
+    def test_known_kid_is_not_blocked_by_a_slow_refresh(self, rsa_key: RSAKey) -> None:
+        gate, started, clock = threading.Event(), threading.Event(), _Clock()
+        fetch, _ = self.slow(jwks(rsa_key), gate, started)
+        r = JwksKeyResolver(fetch=fetch, now=clock)
+        assert r.resolve("rsa-1") is not None
+        clock.t += 301  # proactive refresh due
+        refresher = threading.Thread(target=r.resolve, args=("rsa-1",))
+        refresher.start()
+        assert started.wait(5)  # the refresh is in flight, stuck on a slow IdP
+        t0 = time.monotonic()
+        assert r.resolve("rsa-1") is not None  # served from the current set, no waiting
+        assert time.monotonic() - t0 < 0.5
+        gate.set()
+        refresher.join(5)
+
+    @pytest.mark.security
+    def test_concurrent_unknown_kids_share_one_fetch(self, rsa_key: RSAKey, ec_key: ECKey) -> None:
+        gate, started, clock = threading.Event(), threading.Event(), _Clock()
+        fetch, calls = self.slow(jwks(rsa_key, ec_key), gate, started, instant=0)
+        r = JwksKeyResolver(fetch=fetch, now=clock)
+        found: list[Any] = []
+        threads = [
+            threading.Thread(target=lambda: found.append(r.resolve("ec-1"))) for _ in range(8)
+        ]
+        for th in threads:
+            th.start()
+        assert started.wait(5)
+        gate.set()
+        for th in threads:
+            th.join(5)
+        assert calls["n"] == 1  # exactly one fetch for all eight callers
+        assert len(found) == 8
+        assert all(k is not None for k in found)  # the waiters got that fetch's result
+
+    # #3: a 200 that isn't a JWK Set is a failed fetch, not "the IdP revoked every key".
+
+    @pytest.mark.security
+    @pytest.mark.parametrize("bad", [{}, {"error": "temporarily_unavailable"}, {"keys": "x"}])
+    def test_non_jwk_set_keeps_the_last_good_keys(
+        self, rsa_key: RSAKey, mint: Mint, bad: dict[str, Any]
+    ) -> None:
+        clock = _Clock()
+        v = TokenValidator(
+            policy(),
+            JwksKeyResolver(fetch=_Fetcher(jwks(rsa_key), bad), now=clock),
+            now=lambda: NOW,
+        )
+        v.validate(mint())
+        clock.t += 301  # proactive refresh gets the bad document
+        assert v.validate(mint()).subject
+
+    @pytest.mark.security
+    def test_an_empty_key_list_is_still_authoritative(self, rsa_key: RSAKey, mint: Mint) -> None:
+        """Revoking every key looks like ``{"keys": []}``: that is honoured, not ignored."""
+        clock = _Clock()
+        resolver = JwksKeyResolver(fetch=_Fetcher(jwks(rsa_key), {"keys": []}), now=clock)
+        v = TokenValidator(policy(), resolver, now=lambda: NOW)
+        v.validate(mint())
+        clock.t += 301
+        assert_rejected(v, mint(), Reason.UNKNOWN_KID)
+
+    # #4: typ is a media type; the "application/" prefix is optional (RFC 7515 §4.1.9, 9068 §4).
+
+    @pytest.mark.parametrize(
+        "typ", ["at+jwt", "application/at+jwt", "AT+JWT", "Application/At+JWT"]
+    )
+    def test_typ_with_or_without_application_prefix(
+        self, rsa_key: RSAKey, ec_key: ECKey, mint: Mint, typ: str
+    ) -> None:
+        v = TokenValidator(
+            policy(expected_typ="at+jwt"), StaticKeys(rsa_key, ec_key), now=lambda: NOW
+        )
+        assert v.validate(mint(header={"typ": typ})).subject
+
+    @pytest.mark.security
+    @pytest.mark.parametrize("typ", ["jwt", "text/at+jwt", "application/jwt", "at+jwt2"])
+    def test_other_types_still_refused(
+        self, rsa_key: RSAKey, ec_key: ECKey, mint: Mint, typ: str
+    ) -> None:
+        v = TokenValidator(
+            policy(expected_typ="at+jwt"), StaticKeys(rsa_key, ec_key), now=lambda: NOW
+        )
+        assert_rejected(v, mint(header={"typ": typ}), Reason.WRONG_TYP)
+
+    # #6: a key's own "alg" and "key_ops" are enforced here, not left to the JOSE library.
+
+    @pytest.mark.security
+    def test_key_published_for_rs256_refuses_ps256(self, rsa_key: RSAKey, mint: Mint) -> None:
+        doc = {"keys": [{**rsa_key.as_dict(private=False), "alg": "RS256"}]}
+        v = TokenValidator(policy(), JwksKeyResolver(fetch=_Fetcher(doc)), now=lambda: NOW)
+        assert v.validate(mint()).subject  # RS256: what the key is for
+        assert_rejected(v, mint(alg="PS256"), Reason.ALG_NOT_ALLOWED)
+
+    @pytest.mark.security
+    @pytest.mark.parametrize("ops", [["encrypt"], ["sign"], [], "verify"])
+    def test_key_not_for_verification_is_ignored(
+        self, rsa_key: RSAKey, mint: Mint, ops: Any
+    ) -> None:
+        doc = {"keys": [{**rsa_key.as_dict(private=False), "key_ops": ops}]}
+        v = TokenValidator(policy(), JwksKeyResolver(fetch=_Fetcher(doc)), now=lambda: NOW)
+        assert_rejected(v, mint(), Reason.UNKNOWN_KID)
+
+    def test_key_ops_with_verify_is_used(self, rsa_key: RSAKey, mint: Mint) -> None:
+        doc = {"keys": [{**rsa_key.as_dict(private=False), "key_ops": ["verify"]}]}
+        v = TokenValidator(policy(), JwksKeyResolver(fetch=_Fetcher(doc)), now=lambda: NOW)
+        assert v.validate(mint()).subject
