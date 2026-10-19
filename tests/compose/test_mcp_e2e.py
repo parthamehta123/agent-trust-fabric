@@ -9,7 +9,6 @@ from __future__ import annotations
 import json
 import os
 import pathlib
-import ssl
 import subprocess
 import time
 import uuid
@@ -37,7 +36,10 @@ ASSERTION = "urn:ietf:params:oauth:client-assertion-type:jwt-bearer"
 
 @pytest.fixture(scope="module")
 def http() -> httpx.Client:
-    return httpx.Client(verify=ssl.create_default_context(cafile=str(CA)), timeout=15)
+    """The stack's CA only; harness-bound agent tokens go out as DPoP (ADR-0028)."""
+    from tests.compose.dpop_harness import harness_client
+
+    return harness_client(CA)
 
 
 def _compose(*args: str) -> str:
@@ -51,8 +53,25 @@ def _compose(*args: str) -> str:
     ).stdout
 
 
-def token(http: httpx.Client, as_path: str, client_id: str, key: str, form: dict[str, str]) -> str:
-    """POST to the IdP from the host; the assertion audience is the IdP's *configured* endpoint."""
+def token(
+    http: httpx.Client,
+    as_path: str,
+    client_id: str,
+    key: str,
+    form: dict[str, str],
+    *,
+    bind: bool | None = None,
+) -> str:
+    """POST to the IdP from the host; the assertion audience is the IdP's *configured* endpoint.
+
+    Agents whose IdP clients require DPoP (ADR-0028) get a token bound to the harness's key for
+    that agent; ``bind=False`` forces a plain request (to prove the IdP refuses it)."""
+    from tests.compose.dpop_harness import DPOP_CLIENTS, mint_bound
+
+    if bind is None:
+        bind = client_id in DPOP_CLIENTS and form.get("grant_type") == "client_credentials"
+    if bind:
+        return mint_bound(http, as_path, client_id, key, form)[0]
     signer = InMemoryEs256Signer((KEYS / f"{key}.pem").read_bytes())
     configured = f"{IDP_CONFIGURED}{as_path}"
     assertion = build_client_assertion(

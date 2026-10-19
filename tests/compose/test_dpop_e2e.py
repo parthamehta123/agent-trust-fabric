@@ -1,8 +1,9 @@
 """DPoP on the running stack (ADR-0028 Phase 1, TM-TOK-01).
 
-agent-beta's IdP client requires DPoP; the gateways run in ``optional`` mode (alpha is still
-bearer). These tests attack the live MCP gateway with a stolen-token scenario and check the real
-user -> alpha -> beta -> tool chain runs with beta's hop bound."""
+End state of the ADR-0028 rollout: both agents' IdP clients require DPoP and the data-plane
+gateways run in ``required`` mode. No bearer workload token can be obtained, and none is accepted.
+These tests attack the live gateways with stolen-token scenarios and run the real
+user -> alpha -> beta -> tool chain with every agent hop proven."""
 
 from __future__ import annotations
 
@@ -15,8 +16,8 @@ from typing import Any
 import httpx
 import pytest
 
-from tests.compose.conftest import BETA
-from tests.compose.dpop_harness import bound_workload_token, dpop_call, dpop_request
+from tests.compose.conftest import AGENT, BETA
+from tests.compose.dpop_harness import bound_workload_token, dpop_call, dpop_request, mint_bound
 from tests.compose.test_mcp_e2e import CA, DATA, _compose
 from trustkit.dpop import DpopKey
 
@@ -58,12 +59,16 @@ def beta_key_and_token(http: httpx.Client) -> tuple[DpopKey, str]:
 
 @pytest.mark.security
 class TestStolenBoundToken:
-    def test_idp_refuses_bearer_for_a_dpop_client(self, http: httpx.Client) -> None:
-        """No downgrade at issuance either: a DPoP-required client gets no unbound token."""
-        from tests.compose.test_a2a_e2e import beta_workload
+    @pytest.mark.parametrize(("client", "key_name"), [(AGENT, "agent"), (BETA, "agent-beta")])
+    def test_idp_issues_no_unbound_workload_token(
+        self, http: httpx.Client, client: str, key_name: str
+    ) -> None:
+        """No downgrade at issuance: neither agent can get a token without proving a key."""
+        from tests.compose.test_mcp_e2e import token
 
+        form = {"grant_type": "client_credentials", "scope": "tools.invoke"}
         with pytest.raises(AssertionError):
-            beta_workload(http)
+            token(http, "/oauth2/workload/v1/token", client, key_name, form, bind=False)
 
     def test_replayed_as_bearer_is_refused(
         self,
@@ -122,15 +127,53 @@ class TestStolenBoundToken:
         assert (again.status_code, message(again)) == (401, "dpop_replay")
 
 
-class TestChainWithBoundBeta:
-    def test_chain_runs_and_beta_is_never_audited_as_unbound(self, http: httpx.Client) -> None:
-        from tests.compose.test_a2a_e2e import chain_works
+@pytest.mark.security
+class TestRequiredEverywhere:
+    @pytest.mark.parametrize(
+        ("as_path", "scope", "host", "path", "body"),
+        [
+            ("/oauth2/workload/v1/token", "tools.invoke", "https://localhost:8444", "/mcp", LIST),
+            (
+                "/oauth2/inference/v1/token",
+                "inference.invoke",
+                "https://localhost:8445",
+                "/v1/chat/completions",
+                {"model": "x", "messages": []},
+            ),
+            (
+                "/oauth2/workload/v1/token",
+                "tools.invoke",
+                "https://localhost:8446",
+                f"/agents/{BETA}/a2a",
+                LIST,
+            ),
+        ],
+    )
+    def test_bound_token_stripped_to_bearer_is_refused_at_every_gateway(
+        self, http: httpx.Client, as_path: str, scope: str, host: str, path: str, body: Any
+    ) -> None:
+        key = DpopKey()
+        form = {"grant_type": "client_credentials", "scope": scope}
+        token, _ = mint_bound(http, as_path, AGENT, "agent", form, key)
+        r = http.post(
+            f"{host}{path}",
+            json=body,
+            headers={"Authorization": f"Bearer {token}", "X-Subject-Token": "t2"},
+        )
+        assert r.status_code == 401
+        assert "dpop_missing" in r.text
 
-        assert chain_works(http)  # user -> alpha -> (A2A) -> beta -> MCP gateway -> tool
-        logs = _compose("logs", "--no-color", "mcp-gateway")
-        unbound = [
-            json.loads(line.split("|", 1)[1])
-            for line in logs.splitlines()
-            if "dpop.unbound_workload_token" in line and "|" in line
-        ]
-        assert BETA not in {e.get("client_id") for e in unbound}  # beta's hop was proven
+
+class TestChainFullyBound:
+    def test_chain_runs_with_every_agent_hop_proven(self, http: httpx.Client) -> None:
+        """user -> alpha -(A2A)-> beta -> MCP gateway -> tool, with alpha's and beta's workload
+        tokens both DPoP-bound (the gateways would refuse anything else)."""
+        from tests.compose.dpop_harness import harness_client
+        from tests.compose.test_a2a_e2e import chain_works
+        from tests.compose.test_mcp_e2e import CA
+
+        with harness_client(CA) as agent_http:
+            assert chain_works(agent_http)
+        for svc in ("mcp-gateway", "inference-gateway", "a2a-gateway"):
+            env = _compose("exec", "-T", svc, "printenv", "ATF_DPOP_MODE").strip()
+            assert env == "required", svc

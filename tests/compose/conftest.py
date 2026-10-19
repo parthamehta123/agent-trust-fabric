@@ -130,11 +130,11 @@ def approved_alpha() -> Iterator[None]:
     if os.environ.get("ATF_COMPOSE") != "1":
         yield
         return
-    import ssl
 
+    from tests.compose.dpop_harness import harness_client
     from tests.compose.test_mcp_e2e import CA
 
-    with httpx.Client(verify=ssl.create_default_context(cafile=str(CA)), timeout=15) as http:
+    with harness_client(CA) as http:
         approve_new_version(http, BETA, beta_spec())
         approve_new_version(http)
         wait_until(lambda: inference_status(http) == 200, what="gateways to enforce bundle")

@@ -280,3 +280,15 @@ class TestPhase5Material:
         leaf = cert(result.service_certs["knowledge-server"][0])
         sans = leaf.extensions.get_extension_for_class(x509.SubjectAlternativeName).value
         assert sans.get_values_for_type(x509.DNSName)[0] == "knowledge.tools.internal"
+
+
+def test_both_agents_require_dpop_at_the_idp() -> None:
+    """ADR-0028 end state: no agent can obtain a bearer workload token from the local IdP, and
+    nothing else is changed."""
+    from devstack.bootstrap import AGENT_BETA_CLIENT_ID, AGENT_CLIENT_ID, CLIENT_KEYS, _topology
+
+    jwks = {c: {"kty": "EC", "crv": "P-256", "x": "x", "y": "y"} for c in CLIENT_KEYS.values()}
+    clients = {c["client_id"]: c for c in _topology("https://idp", jwks)["clients"]}
+    required = {cid for cid, c in clients.items() if c.get("dpop_required")}
+    assert required == {AGENT_CLIENT_ID, AGENT_BETA_CLIENT_ID}
+    assert json.dumps(clients)  # serializable topology
