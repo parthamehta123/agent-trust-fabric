@@ -19,6 +19,7 @@ from starlette.concurrency import run_in_threadpool
 
 from atf_agent_runtime.runtime import AgentRuntime
 from trustkit.config import ca_bundle
+from trustkit.dpop import DpopKey, dpop_post
 from trustkit.jwt import JwksKeyResolver
 from trustkit.resource import Principal, ResourceAuthorizer
 from trustkit_http.endpoint import HttpxTokenEndpoint
@@ -158,23 +159,36 @@ def build_runtime_from_env(env: Mapping[str, str]) -> AgentRuntime:
         from trustkit_aws.signers import make_signer_factory
         from trustkit_http.endpoint import tls_context
 
+        # ADR-0028: ATF_WORKLOAD_DPOP=1 binds the workload token to an ephemeral in-memory key
+        # and proves possession on every egress call (agent-by-agent rollout).
+        dpop_key = DpopKey() if env.get("ATF_WORKLOAD_DPOP") == "1" else None
         provider = WorkloadTokenProvider(
             http=http,
             signer=make_signer_factory(env)(env["ATF_WORKLOAD_SIGNING_KEY"]),
             client_id=env["ATF_WORKLOAD_CLIENT_ID"],
             token_endpoint=env["ATF_WORKLOAD_TOKEN_ENDPOINT"],
             scope="tools.invoke",
+            dpop=dpop_key,
         )
         client = httpx.Client(verify=tls_context(ca), timeout=10, follow_redirects=False)
 
-        def post_json(
+        def raw_post(
+            url: str, payload: Mapping[str, Any], headers: Mapping[str, str]
+        ) -> tuple[int, Any, Mapping[str, str]]:
+            r = client.post(url, json=dict(payload), headers=dict(headers))
+            rh = {k.lower(): v for k, v in r.headers.items()}
+            try:
+                return r.status_code, r.json(), rh
+            except ValueError:
+                return r.status_code, None, rh
+
+        def plain_post(
             url: str, payload: Mapping[str, Any], headers: Mapping[str, str]
         ) -> tuple[int, Any]:
-            r = client.post(url, json=dict(payload), headers=dict(headers))
-            try:
-                return r.status_code, r.json()
-            except ValueError:
-                return r.status_code, None
+            status, body, _ = raw_post(url, payload, headers)
+            return status, body
+
+        post_json = dpop_post(dpop_key, raw_post) if dpop_key is not None else plain_post
 
         agent = tool_agent(
             mcp_url=env["ATF_MCP_URL"], workload_token=provider.token, post_json=post_json

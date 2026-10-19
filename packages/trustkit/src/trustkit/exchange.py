@@ -70,6 +70,8 @@ class HttpResult:
     status: int
     body: Mapping[str, Any]
     """Parsed JSON object, or ``{}`` if the response was not acceptable JSON."""
+    dpop_nonce: str | None = None
+    """The ``DPoP-Nonce`` response header, if any (RFC 9449 §8, ADR-0028)."""
 
 
 class TransportError(Exception):
@@ -78,6 +80,14 @@ class TransportError(Exception):
 
 class TokenEndpoint(Protocol):
     def post_form(self, url: str, form: Mapping[str, str]) -> HttpResult: ...
+
+
+class DpopTokenEndpoint(Protocol):
+    """A token endpoint that can send a ``DPoP`` header and report ``DPoP-Nonce`` (ADR-0028)."""
+
+    def post_form(
+        self, url: str, form: Mapping[str, str], *, headers: Mapping[str, str] | None = None
+    ) -> HttpResult: ...
 
 
 # ----------------------------------------------------------------------------- results

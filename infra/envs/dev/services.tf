@@ -26,6 +26,10 @@ locals {
   sign_grants   = { "bundle-publisher" = "bundle", "mcp-gateway" = "tool-gateway", "a2a-gateway" = "a2a-gateway", "interceptor" = "interceptor" }
   tools_clients = ["mcp-gateway", "mcp-admin"]
 
+  read_dpop_key = [
+    { Effect = "Allow", Action = ["secretsmanager:GetSecretValue"], Resource = aws_secretsmanager_secret.dpop_nonce.arn },
+  ]
+
   read_bundle = [
     { Effect = "Allow", Action = ["s3:GetObject"], Resource = local.bundle_obj },
     { Effect = "Allow", Action = ["kms:Decrypt"], Resource = local.data_key },
@@ -33,7 +37,7 @@ locals {
 
   # One statement list per service: exact actions on exact ARNs, no wildcards (asserted in tests).
   policies = {
-    "mcp-gateway" = concat(local.read_bundle, [
+    "mcp-gateway" = concat(local.read_bundle, local.read_dpop_key, [
       { Effect = "Allow", Action = ["dynamodb:GetItem", "dynamodb:Scan"], Resource = local.tables["mcp-servers"] },
       { Effect = "Allow", Action = ["kms:Sign", "kms:GetPublicKey"], Resource = local.sign_keys[local.sign_grants["mcp-gateway"]] },
       { Effect = "Allow", Action = ["secretsmanager:GetSecretValue"], Resource = local.secret_ns },
@@ -42,14 +46,14 @@ locals {
       { Effect = "Allow", Action = ["dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:UpdateItem", "dynamodb:Scan"], Resource = local.tables["mcp-servers"] },
       { Effect = "Allow", Action = ["kms:Decrypt", "kms:GenerateDataKey"], Resource = local.data_key },
     ]
-    "inference-gateway" = concat(local.read_bundle, [
+    "inference-gateway" = concat(local.read_bundle, local.read_dpop_key, [
       { Effect = "Allow", Action = ["dynamodb:UpdateItem"], Resource = local.tables["budgets"] },
       { Effect = "Allow", Action = ["kms:GenerateDataKey"], Resource = local.data_key },
       { Effect = "Allow", Action = ["bedrock:ApplyGuardrail"], Resource = module.guardrail.guardrail_arn },
       ], length(var.allowed_model_arns) == 0 ? [] : [
       { Effect = "Allow", Action = ["bedrock:InvokeModel"], Resource = var.allowed_model_arns },
     ])
-    "a2a-gateway" = concat(local.read_bundle, [
+    "a2a-gateway" = concat(local.read_bundle, local.read_dpop_key, [
       { Effect = "Allow", Action = ["kms:Sign", "kms:GetPublicKey"], Resource = local.sign_keys[local.sign_grants["a2a-gateway"]] },
     ])
     "agent-registry" = [

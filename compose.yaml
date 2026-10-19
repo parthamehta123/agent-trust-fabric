@@ -32,6 +32,12 @@ x-bundle-env: &bundle-env
   ATF_BUNDLE_MAX_AGE_S: "20"
   ATF_BUNDLE_REFRESH_S: "2"
 
+# DPoP at the data-plane gateways (ADR-0028). "optional" = the rollout: DPoP-bound workload tokens
+# must carry a valid proof; bearer ones are still accepted and audited (dpop.unbound_workload_token).
+x-dpop-env: &dpop-env
+  ATF_DPOP_MODE: optional
+  ATF_DPOP_NONCE_KEY_PATH: /run/config/dpop-nonce.key
+
 x-mcp-env: &mcp-env
   ATF_ENV: local
   ATF_CA_BUNDLE: /run/certs/ca.pem
@@ -175,7 +181,8 @@ services:
     build: { context: ., dockerfile: deploy/local/service.Dockerfile, args: { SERVICE: atf-mcp-gateway } }
     command: ["atf_mcp_gateway.app:data_app_from_env"]
     environment:
-      <<: [*mcp-env, *bundle-env]
+      <<: [*mcp-env, *bundle-env, *dpop-env]
+      ATF_PUBLIC_URL: https://mcp-gateway:8443
     volumes:
       - ./.local-ca/ca.pem:/run/certs/ca.pem:ro
       - ./.local-ca/mcp-gateway.pem:/run/certs/tls.pem:ro
@@ -184,6 +191,7 @@ services:
       - ./.local-ca/tool-authorities.json:/run/config/tool-authorities.json:ro
       - ./.local-ca/client-keys/gateway.pem:/run/keys/gateway.pem:ro
       - ./.local-ca/bundle-key.jwk:/run/config/bundle-key.jwk:ro
+      - ./.local-ca/dpop-nonce.key:/run/config/dpop-nonce.key:ro
       - ./.local-ca/bundles:/run/bundles:ro
     ports: ["127.0.0.1:8444:8443"]
     networks: [mcp-edge, ddb-data, tools-data, idp]
@@ -241,6 +249,7 @@ services:
     build: { context: ., dockerfile: deploy/local/service.Dockerfile, args: { SERVICE: atf-inference-gateway } }
     command: ["atf_inference_gateway.app:app_from_env"]
     environment:
+      ATF_PUBLIC_URL: https://inference-gateway:8443
       ATF_ENV: local
       ATF_CA_BUNDLE: /run/certs/ca.pem
       ATF_INFERENCE_PROFILE_PATH: /run/config/inference-profile.json
@@ -252,7 +261,7 @@ services:
       AWS_SECRET_ACCESS_KEY: localdummy
       # Provider credential for mock-llm only; agents' tokens never reach the provider.
       OPENAI_API_KEY: localdummy
-      <<: *bundle-env
+      <<: [*bundle-env, *dpop-env]
     volumes:
       - ./.local-ca/ca.pem:/run/certs/ca.pem:ro
       - ./.local-ca/inference-gateway.pem:/run/certs/tls.pem:ro
@@ -260,6 +269,7 @@ services:
       - ./.local-ca/inference-profile.json:/run/config/inference-profile.json:ro
       - ./.local-ca/model-routes.json:/run/config/model-routes.json:ro
       - ./.local-ca/bundle-key.jwk:/run/config/bundle-key.jwk:ro
+      - ./.local-ca/dpop-nonce.key:/run/config/dpop-nonce.key:ro
       - ./.local-ca/bundles:/run/bundles:ro
     ports: ["127.0.0.1:8445:8443"]
     networks: [inference-edge, ddb-inference, llm, idp]
@@ -354,6 +364,7 @@ services:
       ATF_WORKLOAD_CLIENT_ID: 0oa-agent-beta
       ATF_WORKLOAD_SIGNING_KEY: local:agent-beta
       ATF_WORKLOAD_TOKEN_ENDPOINT: https://mock-idp:8443/oauth2/workload/v1/token
+      ATF_WORKLOAD_DPOP: "1"  # ADR-0028: beta's workload token is DPoP-bound
       ATF_LOCAL_KEYS_DIR: /run/keys
     volumes:
       - ./.local-ca/ca.pem:/run/certs/ca.pem:ro
@@ -378,7 +389,8 @@ services:
     build: { context: ., dockerfile: deploy/local/service.Dockerfile, args: { SERVICE: atf-a2a-gateway } }
     command: ["atf_a2a_gateway.app:app_from_env"]
     environment:
-      <<: *bundle-env
+      <<: [*bundle-env, *dpop-env]
+      ATF_PUBLIC_URL: https://a2a-gateway:8443
       ATF_ENV: local
       ATF_A2A_EGRESS_PROFILE_PATH: /run/config/a2a-egress.json
       ATF_A2A_PUBLIC_URL: https://localhost:8446
@@ -394,6 +406,7 @@ services:
       - ./.local-ca/a2a-egress.json:/run/config/a2a-egress.json:ro
       - ./.local-ca/client-keys/a2a-gateway.pem:/run/keys/a2a-gateway.pem:ro
       - ./.local-ca/bundle-key.jwk:/run/config/bundle-key.jwk:ro
+      - ./.local-ca/dpop-nonce.key:/run/config/dpop-nonce.key:ro
       - ./.local-ca/bundles:/run/bundles:ro
     ports: ["127.0.0.1:8446:8443"]
     networks: [a2a-edge, a2a-agents, idp]

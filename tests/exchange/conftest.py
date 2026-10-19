@@ -50,20 +50,24 @@ class RecordingEndpoint:
 
     idp: MockIdp
     calls: list[tuple[str, dict[str, str]]] = field(default_factory=list)
+    dpop_headers: list[str | None] = field(default_factory=list)
     transport_failures: int = 0
     rewrite_request: Callable[[str, dict[str, str]], dict[str, str]] | None = None
     rewrite_response: Callable[[str, HttpResult], HttpResult] | None = None
 
-    def post_form(self, url: str, form: Mapping[str, str]) -> HttpResult:
+    def post_form(
+        self, url: str, form: Mapping[str, str], *, headers: Mapping[str, str] | None = None
+    ) -> HttpResult:
         f = dict(form)
         self.calls.append((url, f))
+        self.dpop_headers.append((headers or {}).get("DPoP"))
         if self.transport_failures > 0:
             self.transport_failures -= 1
             raise TransportError("simulated")
         if self.rewrite_request:
             f = self.rewrite_request(url, f)
-        r = self.idp.token(url, f)
-        result = HttpResult(r.status, dict(r.body))
+        r = self.idp.token(url, f, dpop=(headers or {}).get("DPoP"))
+        result = HttpResult(r.status, dict(r.body), dpop_nonce=r.headers.get("DPoP-Nonce"))
         return self.rewrite_response(url, result) if self.rewrite_response else result
 
 

@@ -381,3 +381,70 @@ class TestWorkloadProvider:
 
 
 _ = TransportError  # re-exported for readers; transport failures are injected via the endpoint
+
+
+@pytest.mark.security
+class TestDpopBoundWorkloadToken:
+    """ADR-0028: trustkit's DPoP client against the mock IdP's *independent* verifier."""
+
+    @staticmethod
+    def require_dpop(world: World) -> None:
+        import dataclasses
+
+        reg = world.idp._clients[AGENT_CLIENT]
+        world.idp._clients[AGENT_CLIENT] = dataclasses.replace(reg, dpop_required=True)
+
+    def test_nonce_round_trip_yields_a_bound_token(self, world: World) -> None:
+        from trustkit.dpop import DpopKey
+
+        self.require_dpop(world)
+        key = DpopKey()
+        tok = provider(world, dpop=key).token()
+        assert claims(tok)["cnf"] == {"jkt": key.jkt}
+        # First attempt is challenged for a nonce; the retry carries it.
+        assert len(world.endpoint.calls) == 2
+        assert all(h for h in world.endpoint.dpop_headers)
+
+    def test_each_attempt_uses_a_fresh_client_assertion(self, world: World) -> None:
+        from trustkit.dpop import DpopKey
+
+        self.require_dpop(world)
+        provider(world, dpop=DpopKey()).token()
+        a1, a2 = (f["client_assertion"] for _, f in world.endpoint.calls)
+        assert claims(a1)["jti"] != claims(a2)["jti"]
+
+    def test_required_client_without_proof_gets_no_token(self, world: World) -> None:
+        from trustkit.workload import WorkloadTokenError
+
+        self.require_dpop(world)
+        with pytest.raises(WorkloadTokenError):
+            provider(world).token()
+
+    def test_bearer_response_refused_when_dpop_requested(self, world: World) -> None:
+        """Asked for a bound token but got a bearer one: never silently fall back."""
+        from trustkit.dpop import DpopKey
+        from trustkit.workload import WorkloadTokenError
+
+        def as_bearer(url: str, r: HttpResult) -> HttpResult:
+            return HttpResult(r.status, {**r.body, "token_type": "Bearer"}, r.dpop_nonce)
+
+        self.require_dpop(world)
+        world.endpoint.rewrite_response = as_bearer
+        with pytest.raises(WorkloadTokenError):
+            provider(world, dpop=DpopKey()).token()
+
+    def test_one_nonce_retry_only(self, world: World) -> None:
+        """A server that keeps challenging can't make the agent loop."""
+        from trustkit.dpop import DpopKey
+        from trustkit.workload import WorkloadTokenError
+
+        def always_challenge(url: str, r: HttpResult) -> HttpResult:
+            return HttpResult(
+                400, {"error": "use_dpop_nonce"}, "n-" + str(len(world.endpoint.calls))
+            )
+
+        self.require_dpop(world)
+        world.endpoint.rewrite_response = always_challenge
+        with pytest.raises(WorkloadTokenError):
+            provider(world, dpop=DpopKey()).token()
+        assert len(world.endpoint.calls) == 2

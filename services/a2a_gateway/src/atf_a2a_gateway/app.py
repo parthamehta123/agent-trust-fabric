@@ -21,8 +21,18 @@ from fastapi.responses import JSONResponse
 from starlette.concurrency import run_in_threadpool
 
 from atf_a2a_gateway.broker import A2ABroker, A2AError, A2AFailure
+from trustkit.audit import AuditEvent, Decision
 from trustkit.binding import ActorBinding, ActorBindingError
 from trustkit.config import ca_bundle, load_document
+from trustkit.dpop import (
+    DpopError,
+    DpopGuard,
+    challenge_headers,
+    dpop_guard_from_env,
+    guard_error_status,
+)
+from trustkit.jwt import TokenValidationError
+from trustkit_aws.secrets import secret_bytes_fetcher
 
 _STATUS: Final = {
     A2AFailure.POLICY_UNAVAILABLE: (503, -32002),
@@ -87,7 +97,9 @@ def _message_text(body: Any) -> tuple[Any, str] | None:
     return body.get("id"), "\n".join(texts)
 
 
-def create_app(broker: A2ABroker, binder: Binder, viewer: ViewerAuth) -> FastAPI:
+def create_app(
+    broker: A2ABroker, binder: Binder, viewer: ViewerAuth, dpop: DpopGuard | None = None
+) -> FastAPI:
     app = FastAPI(title="a2a-gateway", docs_url=None, redoc_url=None)
 
     @app.post("/agents/{target}/a2a")
@@ -95,6 +107,15 @@ def create_app(broker: A2ABroker, binder: Binder, viewer: ViewerAuth) -> FastAPI
         headers = _headers(request)
         if headers is None:
             return _rpc_error(400, -32600, "invalid request")
+        if dpop is not None:  # ADR-0028
+            try:
+                headers = await run_in_threadpool(dpop.check, headers, "POST", request.url.path)
+            except DpopError as e:
+                r = _rpc_error(guard_error_status(e), -32001, e.reason.value)
+                r.headers.update(challenge_headers(e))
+                return r
+            except (TokenValidationError, ValueError):  # missing or invalid workload token
+                return _rpc_error(401, -32001, "unauthorized")
         try:  # authentication before the body is even read
             binding = await run_in_threadpool(binder, headers)
         except PolicyUnavailableError:
@@ -131,6 +152,17 @@ def create_app(broker: A2ABroker, binder: Binder, viewer: ViewerAuth) -> FastAPI
         headers = _headers(request)
         if headers is None:
             return JSONResponse({"error": "invalid_request"}, status_code=400)
+        if dpop is not None:  # ADR-0028
+            try:
+                headers = await run_in_threadpool(dpop.check, headers, "GET", request.url.path)
+            except DpopError as e:
+                return JSONResponse(
+                    {"error": e.reason.value},
+                    status_code=guard_error_status(e),
+                    headers=challenge_headers(e),
+                )
+            except (TokenValidationError, ValueError):  # missing or invalid workload token
+                return JSONResponse({"error": "unauthorized"}, status_code=401)
         try:
             who = await run_in_threadpool(viewer, headers)
             body = await run_in_threadpool(broker.card, who, target)
@@ -241,7 +273,24 @@ def build_app(env: Mapping[str, str]) -> FastAPI:
             raise ValueError("invalid credentials")
         return cid
 
-    return create_app(broker, binder, viewer)
+    def on_unbound(client_id: str) -> None:  # ADR-0028 rollout: who still sends bearer tokens
+        audit.emit(
+            AuditEvent(
+                event_type="dpop.unbound_workload_token",
+                request_id="dpop",
+                decision=Decision.ALLOW,
+                reason="unbound_token_while_optional",
+                client_id=client_id,
+            )
+        )
+
+    dpop = dpop_guard_from_env(
+        env,
+        validate=workload_v.validate,
+        fetch_secret=secret_bytes_fetcher(region),
+        on_unbound=on_unbound,
+    )
+    return create_app(broker, binder, viewer, dpop)
 
 
 def app_from_env() -> FastAPI:
