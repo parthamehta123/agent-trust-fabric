@@ -51,11 +51,12 @@ agent's audience.
 | **Delegation without amplification** | user ∩ agent ∩ tool scope narrowing at every hop; A → B chains capped at two actors; an edge needs **both** sides plus security approval ([ADR-0024](docs/adr/0024-agent-to-agent-delegation.md)) |
 | **Policy as signed data** | ES256 JWS bundles with a pinned key, a ≤ 10 min max age, rollback and equivocation rejected, and a dead publisher failing everything **closed** ([ADR-0022](docs/adr/0022-cedar-pdp-and-signed-bundles.md)) |
 | **Retrieval-time authorization** | a server-side KB filter plus a per-chunk Cedar re-check; poisoned documents refused at ingestion ([ADR-0025](docs/adr/0025-knowledge-retrieval-authorization.md)) |
+| **Sender-constrained tokens** | agent tokens bound to an in-memory key with DPoP (RFC 9449): a stolen token, a replayed or redirected proof, or a stale one is refused at every gateway. `make demo-stolen-token` walks through it live ([ADR-0028](docs/adr/0028-sender-constrained-tokens.md)) |
 | **Egress safety** | SSRF pinning with named internal hosts, no client secrets anywhere (KMS `private_key_jwt`), response scanning, a Bedrock Guardrail pinned by version |
 | **Key hygiene** | rotation and revocation windows decided deliberately: a revoked IdP key stops being trusted in ≤ 5 min ([ADR-0027](docs/adr/0027-idp-signing-key-rotation.md)) |
 | **Supply chain** | digest-pinned images, SHA-pinned actions, signature-verified IaC tools, checkov sandboxed, a 14-day minimum release age, Dependabot with cooldown |
 | **Infrastructure as code** | ECS Fargate behind three internal ALBs by plane, AgentCore Gateway with a Lambda interceptor, Verified Access for admin, CloudTrail data events, GitHub OIDC roles with exact subjects: all `tofu test`ed |
-| **Traceability** | 27 ADRs; 55 STRIDE threats, each traced to tests; 9 accepted residual risks; 14 documented emulator divergences |
+| **Traceability** | 28 ADRs; 55 STRIDE threats, each traced to tests; 9 accepted residual risks; 14 documented emulator divergences |
 
 ## Documents
 
@@ -118,6 +119,7 @@ uvx pre-commit install
 ```bash
 make up         # ephemeral CA, certs, wheels, images; starts and waits for health
 make e2e        # HTTPS end-to-end suite; trusts only the ephemeral CA
+make demo-stolen-token  # narrated: a thief with the token and alpha's proofs gets nothing
 make logs-scan  # fails if any container log holds token- or key-shaped material
 make down       # stop; `make clean` also deletes .local-ca/ and build/
 ```
