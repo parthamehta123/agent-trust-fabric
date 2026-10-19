@@ -25,6 +25,7 @@ import datetime as dt
 import json
 import os
 import pathlib
+import secrets
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any, Final
@@ -221,6 +222,9 @@ def bootstrap(
     _write(out_dir / "model-routes.json", _json(_model_routes()), 0o644)
     _write(out_dir / "a2a-egress.json", _json(_a2a_egress(base)), 0o644)
     _write(out_dir / "tool-authorities.json", _json(_tool_authorities(base)), 0o644)
+    # DPoP nonce key for the data plane (ADR-0028): shared by the MCP, inference and A2A
+    # gateways so any of them validates any one's nonce. AWS loads it from Secrets Manager.
+    _write(out_dir / "dpop-nonce.key", secrets.token_bytes(32), 0o600)
     kb_dir = out_dir / "kb"  # the ingest step writes the index here (make kb-index)
     kb_dir.mkdir(mode=0o755, exist_ok=True)
 
@@ -361,7 +365,12 @@ def _topology(base: str, jwks: Mapping[str, Mapping[str, str]]) -> dict[str, Any
                     f"{base}/oauth2/{KNOWLEDGE_AS}": list(KB_SCOPES),
                 },
             ),
-            client(AGENT_BETA_CLIENT_ID, {f"{base}/oauth2/{WORKLOAD_AS}": ["tools.invoke"]}),
+            # ADR-0028 rollout: agent-beta opts in to DPoP-bound workload tokens; alpha stays
+            # bearer, so the gateways run in "optional" mode with both kinds of agent.
+            {
+                **client(AGENT_BETA_CLIENT_ID, {f"{base}/oauth2/{WORKLOAD_AS}": ["tools.invoke"]}),
+                "dpop_required": True,
+            },
             client(
                 A2A_CLIENT_ID,
                 {f"{base}/oauth2/{AGENT_BETA}": ["agent.invoke", "tickets.read", *KB_SCOPES]},

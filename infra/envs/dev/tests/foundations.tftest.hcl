@@ -49,6 +49,9 @@ mock_provider "aws" {
   mock_resource "aws_s3_bucket" {
     defaults = { arn = "arn:aws:s3:::atf-dev-bundles-test" }
   }
+  mock_resource "aws_secretsmanager_secret" {
+    defaults = { arn = "arn:aws:secretsmanager:us-east-1:123456789012:secret:atf-dev/data-plane/dpop-nonce-key-AbCdEf" }
+  }
   mock_resource "aws_bedrock_guardrail" {
     defaults = { guardrail_id = "gr0123456789", guardrail_arn = "arn:aws:bedrock:us-east-1:123456789012:guardrail/gr0123456789" }
   }
@@ -188,9 +191,18 @@ run "secrets_and_models_scoped_to_one_service" {
   assert {
     condition = [
       for svc, stmts in output.service_policies : svc
-      if anytrue([for st in stmts : contains(flatten([st.Action]), "secretsmanager:GetSecretValue")])
+      if anytrue([for st in stmts : contains(flatten([st.Action]), "secretsmanager:GetSecretValue") && strcontains(jsonencode(st.Resource), "/mcp/")])
     ] == ["mcp-gateway"]
     error_message = "Only the MCP gateway reads tool secrets."
+  }
+  assert {
+    # Every GetSecretValue grant is either the tool namespace (MCP gateway) or the DPoP nonce key.
+    condition = alltrue(flatten([
+      for svc, stmts in output.service_policies : [
+        for st in stmts : !contains(flatten([st.Action]), "secretsmanager:GetSecretValue") || strcontains(jsonencode(st.Resource), "/mcp/") || strcontains(jsonencode(st.Resource), "dpop-nonce-key")
+      ]
+    ]))
+    error_message = "No other secret may be readable by any task role."
   }
   assert {
     condition = [
@@ -268,7 +280,7 @@ run "no_local_only_or_secret_shaped_env" {
           !contains(["ATF_SSRF_ALLOW_CIDRS", "ATF_LOCAL_KEYS_DIR", "ATF_CA_BUNDLE", "ATF_MOCK_LLM_KEY"], k),
           !startswith(k, "AWS_ENDPOINT_URL"),
           !startswith(k, "AWS_ACCESS_KEY"),
-          !strcontains(k, "SECRET"),
+          !strcontains(k, "SECRET") || endswith(k, "_SECRET_ARN"), # an ARN references a secret; it isn't one
           v != "local",
           !can(regex("PRIVATE KEY|AKIA[0-9A-Z]{16}|client_secret|(^|[^a-z])local:[a-z]", v)),
         ])
@@ -477,4 +489,49 @@ run "trail_covers_every_security_relevant_write" {
     condition     = output.audit.bucket == "atf-dev-trail-test"
     error_message = "The trail writes to the bucket bootstrap's guardrails protect."
   }
+}
+
+
+# ------------------------------------------------------------------ ADR-0028: DPoP
+
+run "dpop_nonce_key_reaches_exactly_the_data_plane_gateways" {
+  command = plan
+  assert {
+    condition = toset([
+      for svc, stmts in output.service_policies : svc
+      if anytrue([for st in stmts : contains(flatten([st.Action]), "secretsmanager:GetSecretValue") && strcontains(jsonencode(st.Resource), "dpop-nonce-key")])
+    ]) == toset(["a2a-gateway", "inference-gateway", "mcp-gateway"])
+    error_message = "Only the three data-plane gateways read the DPoP nonce key."
+  }
+  assert {
+    condition = alltrue([
+      for svc in ["mcp-gateway", "inference-gateway", "a2a-gateway"] : alltrue([
+        output.service_environment[svc]["ATF_DPOP_MODE"] == "optional",
+        startswith(output.service_environment[svc]["ATF_PUBLIC_URL"], "https://"),
+        endswith(output.service_environment[svc]["ATF_PUBLIC_URL"], ".atf.example.com"),
+        strcontains(output.service_environment[svc]["ATF_DPOP_NONCE_KEY_SECRET_ARN"], "secretsmanager"),
+      ])
+    ])
+    error_message = "Each gateway gets its mode, its own public URL (the proof's htu) and the key ARN."
+  }
+  assert {
+    condition     = !anytrue([for svc in ["mcp-admin", "agent-registry", "bundle-publisher", "knowledge-server"] : contains(keys(output.service_environment[svc]), "ATF_DPOP_MODE")])
+    error_message = "DPoP settings only on the data-plane gateways."
+  }
+}
+
+run "dpop_nonce_value_never_in_state" {
+  command = plan
+  assert {
+    condition     = aws_secretsmanager_secret_version.dpop_nonce.secret_string == null && aws_secretsmanager_secret_version.dpop_nonce.secret_string_wo_version == 1
+    error_message = "The key is written write-only (never stored in state or plan)."
+  }
+}
+
+run "dpop_mode_validated" {
+  command = plan
+  variables {
+    dpop_mode = "lenient"
+  }
+  expect_failures = [var.dpop_mode]
 }

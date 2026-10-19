@@ -54,7 +54,7 @@ from typing import Any, Final
 
 from joserfc import jwt as jose_jwt
 from joserfc.errors import JoseError
-from joserfc.jwk import KeySet, RSAKey
+from joserfc.jwk import ECKey, KeySet, RSAKey
 
 GRANT_TOKEN_EXCHANGE: Final = "urn:ietf:params:oauth:grant-type:token-exchange"  # noqa: S105 - protocol URN, not a secret
 GRANT_JWT_BEARER: Final = "urn:ietf:params:oauth:grant-type:jwt-bearer"
@@ -74,6 +74,7 @@ LOGIN_TOKEN_TTL_S: Final = 3600
 class TokenResponse:
     status: int
     body: Mapping[str, Any]
+    headers: Mapping[str, str] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -86,6 +87,9 @@ class ClientRegistration:
     groups: tuple[str, ...] = ()
     """Emitted as a ``groups`` claim in this client's client-credentials tokens (an Okta
     custom-AS groups claim, simplified). Used for the registry's admin roles (ADR-0021 §2)."""
+    dpop_required: bool = False
+    """Okta's "Require DPoP header in token requests" (ADR-0028): client-credentials tokens are
+    issued only with a valid DPoP proof and server nonce, and carry ``cnf.jkt``."""
 
 
 @dataclass(frozen=True)
@@ -120,8 +124,23 @@ def _act_depth(act: Any) -> int:
 
 
 class _OAuthError(Exception):
-    def __init__(self, error: str, description: str, status: int = 400) -> None:
+    def __init__(
+        self,
+        error: str,
+        description: str,
+        status: int = 400,
+        headers: Mapping[str, str] | None = None,
+    ) -> None:
         self.error, self.description, self.status = error, description, status
+        self.headers = dict(headers or {})
+
+
+DPOP_NONCE_TTL_S: Final = 300
+DPOP_IAT_WINDOW_S: Final = 60
+
+
+def _b64url_json(segment: str) -> Any:
+    return json.loads(base64.urlsafe_b64decode(segment + "=" * (-len(segment) % 4)))
 
 
 def _unverified_claims(token: str) -> dict[str, Any]:
@@ -165,6 +184,8 @@ class MockIdp:
         # (ADR-0027). Fixed kids made a recreated mock look like a forger to every validator.
         self._org_key = RSAKey.generate_key(2048, private=True, auto_kid=True)
         self._servers: dict[str, AuthorizationServer] = {}
+        self._dpop_nonces: dict[str, int] = {}
+        self._dpop_jtis: set[str] = set()
         self._server_keys: dict[str, RSAKey] = {}
         self._clients: dict[str, ClientRegistration] = {}
         self._client_keys: dict[str, KeySet] = {}
@@ -252,20 +273,26 @@ class MockIdp:
 
     # -- the token endpoint ----------------------------------------------------------------------
 
-    def token(self, endpoint: str, form: Mapping[str, str]) -> TokenResponse:
+    def token(
+        self, endpoint: str, form: Mapping[str, str], *, dpop: str | None = None
+    ) -> TokenResponse:
         try:
-            return self._dispatch(endpoint, form)
+            return self._dispatch(endpoint, form, dpop)
         except _OAuthError as e:
-            return TokenResponse(e.status, {"error": e.error, "error_description": e.description})
+            return TokenResponse(
+                e.status, {"error": e.error, "error_description": e.description}, e.headers
+            )
 
-    def _dispatch(self, endpoint: str, form: Mapping[str, str]) -> TokenResponse:
+    def _dispatch(
+        self, endpoint: str, form: Mapping[str, str], dpop: str | None = None
+    ) -> TokenResponse:
         if endpoint == self.token_endpoint():
             return self._token_exchange(endpoint, form)
         for as_id in self._servers:
             if endpoint == self.token_endpoint(as_id):
                 grant = form.get("grant_type")
                 if grant == GRANT_CLIENT_CREDENTIALS:
-                    return self._client_credentials(as_id, endpoint, form)
+                    return self._client_credentials(as_id, endpoint, form, dpop)
                 if grant == GRANT_TOKEN_EXCHANGE:
                     return self._delegation_exchange(as_id, endpoint, form)
                 return self._jwt_bearer(as_id, endpoint, form)
@@ -389,7 +416,7 @@ class MockIdp:
         )
 
     def _client_credentials(
-        self, as_id: str, endpoint: str, form: Mapping[str, str]
+        self, as_id: str, endpoint: str, form: Mapping[str, str], dpop: str | None = None
     ) -> TokenResponse:
         """Workload token: client registered at this AS, scopes within its policy for this AS.
 
@@ -397,6 +424,9 @@ class MockIdp:
         """
         client_id, server = self._registered_client(as_id, endpoint, form)
         scope = self._granted_scope(client_id, as_id, form)
+        jkt = None
+        if dpop is not None or self._clients[client_id].dpop_required:
+            jkt = self._verify_dpop(dpop, endpoint)
         now = self._now()
         claims = {
             "iss": self.issuer(as_id),
@@ -411,12 +441,14 @@ class MockIdp:
         groups = self._clients[client_id].groups
         if groups:
             claims["groups"] = sorted(groups)
+        if jkt is not None:
+            claims["cnf"] = {"jkt": jkt}
         token = self._sign(self._server_keys[as_id], ACCESS_TOKEN_TYP, claims)
         return TokenResponse(
             200,
             {
                 "access_token": token,
-                "token_type": "Bearer",
+                "token_type": "DPoP" if jkt is not None else "Bearer",
                 "expires_in": self._at_ttl,
                 "scope": scope,
             },
@@ -486,6 +518,50 @@ class MockIdp:
                 "scope": scope,
             },
         )
+
+    def _verify_dpop(self, proof: str | None, endpoint: str) -> str:
+        """RFC 9449 at the token endpoint, the way Okta documents it: a proof is required, and
+        the first one is answered with ``use_dpop_nonce`` plus a ``DPoP-Nonce`` to retry with.
+        Independent of trustkit on purpose, so the two implementations check each other."""
+        if not proof:
+            raise _OAuthError("invalid_dpop_proof", "DPoP proof required")
+        try:
+            header = _b64url_json(proof.split(".")[0])
+            jwk = header["jwk"]
+        except (KeyError, ValueError, TypeError, IndexError):
+            raise _OAuthError("invalid_dpop_proof", "DPoP proof invalid") from None
+        if header.get("typ") != "dpop+jwt" or header.get("alg") != "ES256" or "d" in jwk:
+            raise _OAuthError("invalid_dpop_proof", "DPoP proof header invalid")
+        try:
+            key = ECKey.import_key(jwk)
+            claims = jose_jwt.decode(proof, key, algorithms=["ES256"]).claims
+        except (ValueError, TypeError, JoseError):
+            raise _OAuthError("invalid_dpop_proof", "DPoP proof invalid") from None
+        now = self._now()
+        if (
+            claims.get("htm") != "POST"
+            or claims.get("htu") != endpoint
+            or not isinstance(claims.get("iat"), int)
+            or abs(now - claims["iat"]) > DPOP_IAT_WINDOW_S
+            or not isinstance(claims.get("jti"), str)
+        ):
+            raise _OAuthError("invalid_dpop_proof", "DPoP proof claims invalid")
+        self._dpop_nonces = {
+            n: t for n, t in self._dpop_nonces.items() if now - t < DPOP_NONCE_TTL_S
+        }
+        if claims.get("nonce") not in self._dpop_nonces:
+            nonce = uuid.uuid4().hex
+            self._dpop_nonces[nonce] = now
+            raise _OAuthError(
+                "use_dpop_nonce",
+                "Authorization server requires nonce in DPoP proof",
+                400,
+                {"DPoP-Nonce": nonce},
+            )
+        if claims["jti"] in self._dpop_jtis:
+            raise _OAuthError("invalid_dpop_proof", "DPoP proof replayed")
+        self._dpop_jtis.add(claims["jti"])
+        return str(key.thumbprint())
 
     def _registered_client(
         self, as_id: str, endpoint: str, form: Mapping[str, str]

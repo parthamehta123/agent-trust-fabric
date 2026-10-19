@@ -44,7 +44,13 @@ def build_idp_from_topology(topology: Mapping[str, Any], *, base_url: str) -> Mo
     for c in topology["clients"]:
         policy = {aud: frozenset(scopes) for aud, scopes in c.get("exchange_policy", {}).items()}
         idp.register_client(
-            ClientRegistration(c["client_id"], c["jwks"], policy, tuple(c.get("groups", ())))
+            ClientRegistration(
+                c["client_id"],
+                c["jwks"],
+                policy,
+                tuple(c.get("groups", ())),
+                dpop_required=bool(c.get("dpop_required", False)),
+            )
         )
     return idp
 
@@ -78,8 +84,10 @@ def create_app(idp: MockIdp, *, env: Mapping[str, str]) -> FastAPI:
         if len(names) != len(set(names)):  # RFC 6749 §3.2: no repeated parameters
             return _oauth_error()
         # The endpoint identity comes from configuration, never from the request's Host header.
-        result = idp.token(idp.token_endpoint(as_id), dict(pairs))
-        return JSONResponse(dict(result.body), status_code=result.status, headers=_NO_STORE)
+        result = idp.token(idp.token_endpoint(as_id), dict(pairs), dpop=request.headers.get("dpop"))
+        return JSONResponse(
+            dict(result.body), status_code=result.status, headers={**_NO_STORE, **result.headers}
+        )
 
     @app.post("/oauth2/v1/token")
     async def org_token(request: Request) -> JSONResponse:

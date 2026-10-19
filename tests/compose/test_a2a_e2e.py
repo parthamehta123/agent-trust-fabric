@@ -127,9 +127,21 @@ class TestChain:
 @pytest.mark.security
 class TestDenies:
     def test_card_hidden_from_agent_without_edge(self, http: httpx.Client) -> None:  # noqa: F811
-        r = http.get(
-            f"{A2A}/agents/{AGENT}/.well-known/agent-card.json",
-            headers={"Authorization": f"Bearer {beta_workload(http)}"},  # beta -> alpha: no edge
+        """beta -> alpha has no edge. Beta now authenticates with a DPoP-bound token and a valid
+        proof (ADR-0028), and still learns nothing: least disclosure holds for a proven caller."""
+        from tests.compose.dpop_harness import bound_workload_token, dpop_call
+        from trustkit.dpop import DpopKey
+
+        key = DpopKey()
+        token, _ = bound_workload_token(http, BETA, "agent-beta", key)
+        path = f"/agents/{AGENT}/.well-known/agent-card.json"
+        r = dpop_call(
+            http,
+            "GET",
+            host_url=f"{A2A}{path}",
+            public_url=f"https://a2a-gateway:8443{path}",
+            token=token,
+            key=key,
         )
         assert (r.status_code, r.json()) == (404, {"error": "unknown_agent"})
 

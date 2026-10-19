@@ -136,6 +136,18 @@ Then work through the checklist below, ticking each row in `docs/emulator-diverg
 | Audit: trail logging with the agreed selectors, logs undeletable | automated | `test_pins_and_audit.py` |
 | Corpus writable only by kb-ingest | automated (an admin write is denied) | `test_pins_and_audit.py` |
 
+## 8b. DPoP rollout and nonce-key rotation (ADR-0028)
+
+1. Gateways start in `dpop_mode = "optional"`: bound tokens must carry a valid proof, and bearer
+   tokens are accepted but audited as `dpop.unbound_workload_token`.
+2. Per agent: enable "Require DPoP header in token requests" on its Okta API Services app, and
+   set `ATF_WORKLOAD_DPOP=1` on its runtime. Confirm its calls succeed and that it disappears
+   from the unbound audit events.
+3. When the unbound events stop for a plane, set `dpop_mode = "required"` and apply. From then
+   on, any unbound token is refused.
+4. Rotating the nonce key: bump `dpop_nonce_key_version` and apply, then force a rolling
+   restart of the three gateways. In-flight nonces fail once, and agents retry with a fresh one.
+
 ## 9. IdP signing-key compromise (IdP admin + admin, ADR-0027)
 
 Without action, validators stop trusting a key the IdP has removed within **5 minutes**

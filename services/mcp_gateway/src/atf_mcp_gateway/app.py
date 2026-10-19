@@ -35,10 +35,19 @@ from atf_mcp_gateway.admin import (
 )
 from atf_mcp_gateway.proxy import Authorizer, McpProxy
 from atf_mcp_gateway.servers import Delegation, ServerRecord
+from trustkit.audit import AuditEvent, Decision
 from trustkit.binding import ActorBinding, ActorBindingError
 from trustkit.config import ca_bundle, load_document
+from trustkit.dpop import (
+    DpopError,
+    DpopGuard,
+    challenge_headers,
+    dpop_guard_from_env,
+    guard_error_status,
+)
 from trustkit.exchange import KeyResolverFactory
-from trustkit.jwt import TokenValidator
+from trustkit.jwt import TokenValidationError, TokenValidator
+from trustkit_aws.secrets import secret_bytes_fetcher
 from trustkit_policy.bundle import LoadedBundle
 
 _ADMIN_STATUS: Final = {
@@ -141,7 +150,7 @@ def bundle_authorizer(
     return authorize
 
 
-def create_data_app(proxy: McpProxy, binder: Binder) -> FastAPI:
+def create_data_app(proxy: McpProxy, binder: Binder, dpop: DpopGuard | None = None) -> FastAPI:
     app = FastAPI(title="mcp-gateway (data plane)", docs_url=None, redoc_url=None)
 
     @app.post("/mcp")
@@ -149,6 +158,15 @@ def create_data_app(proxy: McpProxy, binder: Binder) -> FastAPI:
         headers = _single_valued_headers(request)
         if headers is None:
             return _rpc_error(400, -32600, "invalid request")
+        if dpop is not None:  # ADR-0028: proof of possession before anything uses the token
+            try:
+                headers = await run_in_threadpool(dpop.check, headers, "POST", request.url.path)
+            except DpopError as e:
+                r = _rpc_error(guard_error_status(e), -32001, e.reason.value)
+                r.headers.update(challenge_headers(e))
+                return r
+            except (TokenValidationError, ValueError):  # missing or invalid workload token
+                return _rpc_error(401, -32001, "unauthorized")
         try:
             binding = await run_in_threadpool(binder, headers)
         except PolicyUnavailableError:
@@ -391,7 +409,25 @@ def build_data_app(env: Mapping[str, str]) -> FastAPI:
         scanner=LocalRulesScanner(),
         authorize=bundle_authorizer(policy, now),
     )
-    return create_data_app(proxy, bundle_binder(policy, workload_v, c["jwks"], now))
+
+    def on_unbound(client_id: str) -> None:  # ADR-0028 rollout: who still sends bearer tokens
+        JsonLinesSink(sys.stdout).emit(
+            AuditEvent(
+                event_type="dpop.unbound_workload_token",
+                request_id="dpop",
+                decision=Decision.ALLOW,
+                reason="unbound_token_while_optional",
+                client_id=client_id,
+            )
+        )
+
+    dpop = dpop_guard_from_env(
+        env,
+        validate=workload_v.validate,
+        fetch_secret=secret_bytes_fetcher(c["region"]),
+        on_unbound=on_unbound,
+    )
+    return create_data_app(proxy, bundle_binder(policy, workload_v, c["jwks"], now), dpop)
 
 
 def build_admin_app(env: Mapping[str, str]) -> FastAPI:

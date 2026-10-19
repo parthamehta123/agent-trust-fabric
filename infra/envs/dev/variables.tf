@@ -226,6 +226,22 @@ variable "kb_ingest_principal_arns" {
 }
 
 # ---------------------------------------------------------------- 6d: audit
+variable "dpop_mode" {
+  type        = string
+  default     = "optional"
+  description = "ADR-0028 rollout at the data-plane gateways: optional (bearer audited) or required."
+  validation {
+    condition     = contains(["off", "optional", "required"], var.dpop_mode)
+    error_message = "off, optional or required."
+  }
+}
+
+variable "dpop_nonce_key_version" {
+  type        = number
+  default     = 1
+  description = "Bump to rotate the DPoP nonce key (a new write-only value is generated)."
+}
+
 variable "cloudtrail_bucket_name" {
   type        = string
   description = "CloudTrail log bucket; must equal bootstrap's cloudtrail_bucket_name (its guardrails name it)."

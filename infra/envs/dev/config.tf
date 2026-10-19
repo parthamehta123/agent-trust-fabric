@@ -147,11 +147,22 @@ locals {
     })
   }
 
+  # ADR-0028: DPoP at the data plane. ATF_PUBLIC_URL is what agents call (the proof's htu).
+  dpop_env = {
+    for svc in local.dpop_gateways : svc => {
+      ATF_DPOP_MODE                 = var.dpop_mode
+      ATF_PUBLIC_URL                = "https://${local.plane[svc].host}.${var.domain}"
+      ATF_DPOP_NONCE_KEY_SECRET_ARN = aws_secretsmanager_secret.dpop_nonce.arn
+    }
+  }
+
   common_env = {
     ATF_ENV    = var.environment
     AWS_REGION = local.region
   }
-  rendered_env = { for svc in local.services : svc => merge(local.common_env, local.service_env[svc]) }
+  rendered_env = {
+    for svc in local.services : svc => merge(local.common_env, local.service_env[svc], lookup(local.dpop_env, svc, {}))
+  }
 }
 
 # Admin-plane hosts must never become reachable egress targets (ADR-0026 §19, RR-7).

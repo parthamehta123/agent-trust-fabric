@@ -60,12 +60,19 @@ class HttpxTokenEndpoint:
             headers={"accept": "application/json"},
         )
 
-    def post_form(self, url: str, form: Mapping[str, str]) -> HttpResult:
+    def post_form(
+        self, url: str, form: Mapping[str, str], *, headers: Mapping[str, str] | None = None
+    ) -> HttpResult:
+        """``headers`` is for ``DPoP`` only (ADR-0028); nothing else is sent to a token endpoint."""
         _require_https(url)
+        extra = {k: v for k, v in (headers or {}).items() if k.lower() == "dpop"}
         try:
-            with self._client.stream("POST", url, data=dict(form)) as resp:
+            with self._client.stream("POST", url, data=dict(form), headers=extra) as resp:
                 body = self._read_json_object(resp)
-                return HttpResult(resp.status_code, body if body is not None else {})
+                nonce = resp.headers.get("dpop-nonce")
+                return HttpResult(
+                    resp.status_code, body if body is not None else {}, dpop_nonce=nonce
+                )
         except httpx.HTTPError:
             # Dropped cause on purpose: httpx messages can include request details (TM-ING-06).
             raise TransportError("token endpoint unreachable") from None

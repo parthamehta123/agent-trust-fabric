@@ -16,8 +16,17 @@ from fastapi.responses import JSONResponse
 from starlette.concurrency import run_in_threadpool
 
 from atf_inference_gateway.service import ChatError, InferenceService
+from trustkit.audit import AuditEvent, Decision
 from trustkit.config import ca_bundle, load_document
+from trustkit.dpop import (
+    DpopError,
+    DpopGuard,
+    challenge_headers,
+    dpop_guard_from_env,
+    guard_error_status,
+)
 from trustkit.jwt import TokenValidationError, TokenValidator
+from trustkit_aws.secrets import secret_bytes_fetcher
 
 
 def _err(status: int, code: str) -> JSONResponse:
@@ -25,7 +34,9 @@ def _err(status: int, code: str) -> JSONResponse:
     return JSONResponse({"error": {"type": code}}, status_code=status, headers=headers)
 
 
-def create_app(service: InferenceService, workload_validator: TokenValidator) -> FastAPI:
+def create_app(
+    service: InferenceService, workload_validator: TokenValidator, dpop: DpopGuard | None = None
+) -> FastAPI:
     app = FastAPI(title="inference-gateway", docs_url=None, redoc_url=None)
 
     @app.post("/v1/chat/completions")
@@ -34,6 +45,21 @@ def create_app(service: InferenceService, workload_validator: TokenValidator) ->
         if len(names) != len(set(names)):
             return _err(400, "invalid_request")  # header smuggling
         auth = request.headers.get("authorization", "")
+        if dpop is not None:  # ADR-0028
+            try:
+                checked = await run_in_threadpool(
+                    dpop.check,
+                    {k.lower(): v for k, v in request.headers.items()},
+                    "POST",
+                    request.url.path,
+                )
+            except DpopError as e:
+                r = _err(guard_error_status(e), e.reason.value)
+                r.headers.update(challenge_headers(e))
+                return r
+            except (TokenValidationError, ValueError):  # missing or invalid workload token
+                return _err(401, "unauthorized")
+            auth = checked["authorization"]
         if not auth.startswith("Bearer "):
             return _err(401, "unauthorized")
         try:
@@ -128,7 +154,25 @@ def build_app(env: Mapping[str, str]) -> FastAPI:
         ),
         routable=frozenset(routes),
     )
-    return create_app(service, validator)
+
+    def on_unbound(client_id: str) -> None:  # ADR-0028 rollout: who still sends bearer tokens
+        JsonLinesSink(sys.stdout).emit(
+            AuditEvent(
+                event_type="dpop.unbound_workload_token",
+                request_id="dpop",
+                decision=Decision.ALLOW,
+                reason="unbound_token_while_optional",
+                client_id=client_id,
+            )
+        )
+
+    dpop = dpop_guard_from_env(
+        env,
+        validate=validator.validate,
+        fetch_secret=secret_bytes_fetcher(region),
+        on_unbound=on_unbound,
+    )
+    return create_app(service, validator, dpop)
 
 
 def _ensure_local_table(ddb: Any, table: str) -> None:
