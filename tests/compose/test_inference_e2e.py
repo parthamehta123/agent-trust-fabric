@@ -89,7 +89,8 @@ def test_tool_gateway_token_is_rejected(http: httpx.Client) -> None:  # noqa: F8
     )
     r = chat(http, tool_tok, "hello")
     assert r.status_code == 401
-    assert r.headers["www-authenticate"] == "Bearer"
+    # Required mode advertises only DPoP; no error detail for a wrong audience (RFC 9449 §7.1).
+    assert r.headers["www-authenticate"] == 'DPoP algs="ES256"'
 
 
 @pytest.mark.security
