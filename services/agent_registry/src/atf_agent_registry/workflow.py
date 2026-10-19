@@ -245,8 +245,8 @@ class RegistryService:
         v = self._load(ev, who, agent_id, version)
         if v.state is not State.IN_REVIEW:
             self._deny(ev, who, agent_id, version, Failure.CONFLICT, "not in review")
-        if (reason := _untrusted_idp(v.spec, self._trusted_idps)) is not None:
-            self._deny(ev, who, agent_id, version, Failure.INVALID, reason)  # drafted before #1
+        # No IdP check here: rejecting is how a version that can no longer be approved (e.g.
+        # its IdP left the trusted list) gets out of review (bundle review #1).
         if who.subject == v.author:
             self._deny(ev, who, agent_id, version, Failure.SAME_PERSON, "author")
         prev = self._approved(self._versions(agent_id))

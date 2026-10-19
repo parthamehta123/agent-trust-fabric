@@ -213,3 +213,25 @@ class TestFailClosed:
         p = CedarPdp(GUARDRAILS, {AGENT: grant()})
         assert not tool(p).allowed
         assert not model(p).allowed
+
+
+@pytest.mark.security
+class TestNonEmptyScopes:
+    """Bundle review #2: Cedar's ``containsAll`` of an empty set is true, so without the
+    guardrail the policy set itself allowed an empty tool request, even for a user with no
+    entitlements. Decision points refuse it too; the policy no longer depends on that."""
+
+    @pytest.mark.parametrize("user_scopes", [[], ["tickets.read"]])
+    def test_empty_request_is_denied_by_the_policy_set(self, user_scopes: list[str]) -> None:
+        d = tool(pdp(), scopes=[], user_scopes=user_scopes)
+        assert not d.allowed
+        assert d.policy_ids == ("guardrail:non-empty-scopes",)
+
+    def test_a_real_request_is_unaffected(self) -> None:
+        assert tool(pdp(), scopes=["tickets.read"]).allowed
+
+    def test_without_the_guardrail_cedar_alone_would_allow(self) -> None:
+        """Why the guardrail exists: the generated permit matches an empty request."""
+        gs = {AGENT: grant()}
+        bare = CedarPdp(generate_permits(gs), gs)
+        assert tool(bare, scopes=[], user_scopes=[]).allowed

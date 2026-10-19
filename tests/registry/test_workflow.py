@@ -630,3 +630,23 @@ class TestTrustedIdps:
         v = lax.create_draft(DAVE, AGENT, spec(ingress=ROGUE))
         lax.submit(DAVE, AGENT, v.version)
         fails(Failure.INVALID, env.svc.approve, BOB, AGENT, v.version, ApprovalRole.APPROVER)
+
+
+@pytest.mark.security
+class TestRejectAlwaysWorks:
+    """Bundle review #1 (a regression from the ADR-0027 review): a version that can no longer be
+    approved (its IdP isn't trusted) must still be rejectable, or the agent is stuck: no
+    approval, no rejection, and no new draft while it stays in review."""
+
+    def test_untrusted_version_in_review_can_be_rejected_and_redrafted(self, env: Env) -> None:
+        lax = RegistryService(
+            env.store,
+            env.audit,
+            trusted_idps=TrustedIdps(frozenset({"https://idp.attacker.example"})),
+            now=env.clock,
+        )
+        v = lax.create_draft(DAVE, AGENT, spec(ingress=ROGUE))
+        lax.submit(DAVE, AGENT, v.version)
+        fails(Failure.INVALID, env.svc.approve, BOB, AGENT, v.version, ApprovalRole.APPROVER)
+        assert env.svc.reject(BOB, AGENT, v.version).state is State.REJECTED
+        assert env.svc.create_draft(DAVE, AGENT, spec(ingress=TRUSTED_T2)).state is State.DRAFT
