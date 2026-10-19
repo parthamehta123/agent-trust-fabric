@@ -6,7 +6,7 @@ PACKAGES := mock-idp gateway-emulator atf-agent-runtime atf-interceptor atf-mcp-
             atf-inference-gateway mock-llm atf-agent-registry atf-a2a-gateway \
             atf-knowledge-server
 
-.PHONY: certs kb-index wheels up e2e logs-scan down clean iac-tools iac-validate iac-plan iac-apply image-policy
+.PHONY: certs kb-index wheels up e2e demo-stolen-token logs-scan down clean iac-tools iac-validate iac-plan iac-apply image-policy
 
 certs:  ## ephemeral CA, service certs, client key, configs -> .local-ca/ (gitignored)
 	uv run python -m devstack.bootstrap --out .local-ca
@@ -41,6 +41,9 @@ up: certs kb-index wheels  ## build images and start the stack (waits for health
 
 e2e:  ## run the HTTPS e2e suite against the running stack
 	ATF_COMPOSE=1 uv run pytest -m compose tests/compose -v
+
+demo-stolen-token:  ## narrated: a stolen DPoP-bound token is useless without the key (ADR-0028)
+	ATF_COMPOSE=1 uv run pytest tests/compose/demo_stolen_token.py -s -q -p no:cacheprovider
 
 logs-scan:  ## fail if any container log contains token- or key-shaped material (TM-ING-06)
 	mkdir -p build && docker compose logs --no-color > build/compose.log
